@@ -10,6 +10,14 @@ cp .env.example .env
 # Edit .env with your NEAR API key
 ```
 
+## Environment Variables
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `NEAR_API_KEY` | **Yes** | — | Your NEAR Intents API key. Get one at [partners.near-intents.org](https://partners.near-intents.org/) |
+| `PORT` | No | `3001` | Port the server listens on |
+| `ONECLICK_BASE_URL` | No | `https://1click.chaindefuser.com` | 1Click API base URL (override for staging/testing) |
+
 ## Development
 
 ```bash
@@ -25,11 +33,18 @@ npm run dev
 | `POST` | `/api/deposit` | Submit a deposit transaction hash |
 | `GET` | `/api/status/:depositAddress` | Get swap execution status |
 
-## Deployment
+## Deployment (Render)
 
-Deploy to Railway or any Node.js hosting. Set the `NEAR_API_KEY` environment variable.
+1. Create a new **Web Service** on [Render](https://render.com) pointing at this repository.
+2. Set the following:
+   - **Runtime**: Node
+   - **Build Command**: `npm install && npm run build`
+   - **Start Command**: `npm start`
+3. Add the required environment variable `NEAR_API_KEY` in the Render dashboard under **Environment**.
+4. Deploy. The `/health` endpoint will confirm the service is running.
 
 ```bash
+# Verify locally before deploying
 npm run build
 npm start
 ```
