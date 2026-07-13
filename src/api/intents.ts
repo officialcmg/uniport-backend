@@ -11,8 +11,25 @@ import {
     QuoteRequest,
     ApiError,
 } from '@defuse-protocol/one-click-sdk-typescript';
+import {
+    parseDepositRequestBody,
+    parseQuoteRequestBody,
+    sendError,
+} from './contract.js';
 
 export const intentsRouter = Router();
+
+const SWAP_TYPE_MAP = {
+    EXACT_INPUT: QuoteRequest.swapType.EXACT_INPUT,
+    EXACT_OUTPUT: QuoteRequest.swapType.EXACT_OUTPUT,
+    FLEX_INPUT: QuoteRequest.swapType.FLEX_INPUT,
+    ANY_INPUT: QuoteRequest.swapType.ANY_INPUT,
+} as const;
+
+const DEPOSIT_MODE_MAP = {
+    SIMPLE: QuoteRequest.depositMode.SIMPLE,
+    MEMO: QuoteRequest.depositMode.MEMO,
+} as const;
 
 // ============================================================================
 // POST /api/quote
@@ -20,10 +37,22 @@ export const intentsRouter = Router();
 
 intentsRouter.post('/quote', async (req, res) => {
     try {
+        const parsed = parseQuoteRequestBody(req.body);
+
+        if (!parsed.value) {
+            sendError(res, 400, {
+                code: 'VALIDATION_ERROR',
+                message: 'Invalid quote request.',
+                details: parsed.errors,
+            });
+            return;
+        }
+
         const {
             dry,
             swapType,
             slippageTolerance,
+            depositMode,
             originAsset,
             destinationAsset,
             amount,
@@ -31,20 +60,15 @@ intentsRouter.post('/quote', async (req, res) => {
             recipient,
             deadline,
             referral,
-        } = req.body;
-
-        // Validate required fields
-        if (!originAsset || !destinationAsset || !amount || !recipient) {
-            res.status(400).json({
-                error: 'Missing required fields: originAsset, destinationAsset, amount, recipient',
-            });
-            return;
-        }
+        } = parsed.value;
 
         const quoteRequest: QuoteRequest = {
             dry: dry ?? false,
-            swapType: swapType ?? QuoteRequest.swapType.EXACT_INPUT,
+            swapType: swapType
+                ? SWAP_TYPE_MAP[swapType]
+                : QuoteRequest.swapType.EXACT_INPUT,
             slippageTolerance: slippageTolerance ?? 100,
+            depositMode: depositMode ? DEPOSIT_MODE_MAP[depositMode] : undefined,
             originAsset,
             depositType: QuoteRequest.depositType.ORIGIN_CHAIN,
             destinationAsset,
@@ -74,14 +98,18 @@ intentsRouter.post('/quote', async (req, res) => {
         });
     } catch (error) {
         if (error instanceof ApiError) {
-            res.status(error.status).json({
-                error: `Quote failed`,
+            sendError(res, error.status, {
+                code: 'QUOTE_FAILED',
+                message: 'Quote failed.',
                 details: error.body,
             });
             return;
         }
         console.error('Quote error:', error);
-        res.status(500).json({ error: 'Internal server error' });
+        sendError(res, 500, {
+            code: 'INTERNAL_ERROR',
+            message: 'Internal server error.',
+        });
     }
 });
 
@@ -91,14 +119,19 @@ intentsRouter.post('/quote', async (req, res) => {
 
 intentsRouter.post('/deposit', async (req, res) => {
     try {
-        const { txHash, depositAddress, memo, nearSenderAccount } = req.body;
+        const parsed = parseDepositRequestBody(req.body);
 
-        if (!txHash || !depositAddress) {
-            res.status(400).json({
-                error: 'Missing required fields: txHash, depositAddress',
+        if (!parsed.value) {
+            sendError(res, 400, {
+                code: 'VALIDATION_ERROR',
+                message: 'Invalid deposit submission.',
+                details: parsed.errors,
             });
             return;
         }
+
+        const { txHash, depositAddress, memo, nearSenderAccount } =
+            parsed.value;
 
         await OneClickService.submitDepositTx({
             txHash,
@@ -110,14 +143,18 @@ intentsRouter.post('/deposit', async (req, res) => {
         res.json({ success: true });
     } catch (error) {
         if (error instanceof ApiError) {
-            res.status(error.status).json({
-                error: 'Submit deposit failed',
+            sendError(res, error.status, {
+                code: 'DEPOSIT_SUBMISSION_FAILED',
+                message: 'Submit deposit failed.',
                 details: error.body,
             });
             return;
         }
         console.error('Deposit error:', error);
-        res.status(500).json({ error: 'Internal server error' });
+        sendError(res, 500, {
+            code: 'INTERNAL_ERROR',
+            message: 'Internal server error.',
+        });
     }
 });
 
@@ -131,7 +168,10 @@ intentsRouter.get('/status/:depositAddress', async (req, res) => {
         const memo = req.query.memo as string | undefined;
 
         if (!depositAddress) {
-            res.status(400).json({ error: 'Missing depositAddress parameter' });
+            sendError(res, 400, {
+                code: 'VALIDATION_ERROR',
+                message: 'Missing depositAddress parameter.',
+            });
             return;
         }
 
@@ -162,13 +202,17 @@ intentsRouter.get('/status/:depositAddress', async (req, res) => {
         });
     } catch (error) {
         if (error instanceof ApiError) {
-            res.status(error.status).json({
-                error: 'Status check failed',
+            sendError(res, error.status, {
+                code: 'STATUS_CHECK_FAILED',
+                message: 'Status check failed.',
                 details: error.body,
             });
             return;
         }
         console.error('Status error:', error);
-        res.status(500).json({ error: 'Internal server error' });
+        sendError(res, 500, {
+            code: 'INTERNAL_ERROR',
+            message: 'Internal server error.',
+        });
     }
 });

@@ -33,15 +33,15 @@ npm run dev
 | `POST` | `/api/deposit` | Submit a deposit transaction hash |
 | `GET` | `/api/status/:depositAddress` | Get swap execution status |
 
-## Deployment (Render)
+## Deployment (Railway)
 
-1. Create a new **Web Service** on [Render](https://render.com) pointing at this repository.
-2. Set the following:
-   - **Runtime**: Node
-   - **Build Command**: `npm install && npm run build`
-   - **Start Command**: `npm start`
-3. Add the required environment variable `NEAR_API_KEY` in the Render dashboard under **Environment**.
-4. Deploy. The `/health` endpoint will confirm the service is running.
+1. Create a new Railway service from this repository.
+2. Set the service root directory to `uniport-backend`.
+3. Add the required environment variable `NEAR_API_KEY`.
+4. Deploy. Railway will use `railway.json` for build, start, restart, and health check settings.
+5. Verify `/health` on the public Railway domain.
+
+After deployment, update the SDK default hosted backend URL in `uniport-sdk/src/core/config.ts` to the Railway service URL.
 
 ```bash
 # Verify locally before deploying

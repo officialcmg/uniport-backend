@@ -10,6 +10,10 @@ dotenv.config();
 const app = express();
 const PORT = process.env.PORT || 3001;
 
+// Railway and similar edge proxies forward client IPs through X-Forwarded-For.
+// Trust the first proxy so rate limiting keys are computed correctly.
+app.set('trust proxy', 1);
+
 // ============================================================================
 // Validate required environment variables
 // ============================================================================
