@@ -22,7 +22,7 @@ export interface QuoteRequestBody {
     originAsset: string;
     destinationAsset: string;
     amount: string;
-    refundTo: string;
+    refundTo?: string;
     recipient: string;
     deadline?: string;
     referral?: string;
@@ -101,7 +101,9 @@ export function parseQuoteRequestBody(body: unknown): {
     if (!isPositiveIntegerString(amount)) {
         errors.push('amount must be a positive integer string.');
     }
-    if (!isNonEmptyString(refundTo)) errors.push('refundTo is required.');
+    if (swapType !== 'EXACT_OUTPUT' && !isNonEmptyString(refundTo)) {
+        errors.push('refundTo is required.');
+    }
     if (!isNonEmptyString(recipient)) errors.push('recipient is required.');
     if (dry !== undefined && typeof dry !== 'boolean') {
         errors.push('dry must be a boolean.');
@@ -150,7 +152,7 @@ export function parseQuoteRequestBody(body: unknown): {
             originAsset: originAsset as string,
             destinationAsset: destinationAsset as string,
             amount: amount as string,
-            refundTo: refundTo as string,
+            refundTo: optionalString(refundTo),
             recipient: recipient as string,
             deadline: optionalString(deadline),
             referral: optionalString(referral),

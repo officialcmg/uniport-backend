@@ -17,6 +17,7 @@ cp .env.example .env
 | `NEAR_API_KEY` | **Yes** | — | Your NEAR Intents API key. Get one at [partners.near-intents.org](https://partners.near-intents.org/) |
 | `PORT` | No | `3001` | Port the server listens on |
 | `ONECLICK_BASE_URL` | No | `https://1click.chaindefuser.com` | 1Click API base URL (override for staging/testing) |
+| `UNIPORT_INTENTS_REFUND_ACCOUNT` | For `EXACT_OUTPUT` | — | Uniport-controlled Intents account that receives rounded surplus and failed-swap refunds |
 
 ## Development
 

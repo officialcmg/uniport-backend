@@ -62,6 +62,18 @@ intentsRouter.post('/quote', async (req, res) => {
             referral,
         } = parsed.value;
 
+        const isExactOutput = swapType === 'EXACT_OUTPUT';
+        const intentsRefundAccount =
+            process.env.UNIPORT_INTENTS_REFUND_ACCOUNT?.trim().toLowerCase();
+
+        if (isExactOutput && !intentsRefundAccount) {
+            sendError(res, 503, {
+                code: 'INTERNAL_ERROR',
+                message: 'Exact-output payments are not configured.',
+            });
+            return;
+        }
+
         const quoteRequest: QuoteRequest = {
             dry: dry ?? false,
             swapType: swapType
@@ -73,8 +85,10 @@ intentsRouter.post('/quote', async (req, res) => {
             depositType: QuoteRequest.depositType.ORIGIN_CHAIN,
             destinationAsset,
             amount,
-            refundTo: refundTo ?? '',
-            refundType: QuoteRequest.refundType.ORIGIN_CHAIN,
+            refundTo: isExactOutput ? intentsRefundAccount! : refundTo!,
+            refundType: isExactOutput
+                ? QuoteRequest.refundType.INTENTS
+                : QuoteRequest.refundType.ORIGIN_CHAIN,
             recipient,
             recipientType: QuoteRequest.recipientType.DESTINATION_CHAIN,
             deadline: deadline ?? new Date(Date.now() + 3600000).toISOString(),
@@ -88,9 +102,12 @@ intentsRouter.post('/quote', async (req, res) => {
                 depositAddress: response.quote.depositAddress ?? '',
                 depositMemo: response.quote.depositMemo,
                 amountIn: response.quote.amountIn,
+                amountInFormatted: response.quote.amountInFormatted,
+                minAmountIn: response.quote.minAmountIn,
                 amountOut: response.quote.amountOut,
                 amountOutFormatted: response.quote.amountOutFormatted,
                 amountOutUsd: response.quote.amountOutUsd,
+                minAmountOut: response.quote.minAmountOut,
                 deadline: response.quote.deadline,
                 timeWhenInactive: response.quote.timeWhenInactive,
             },
