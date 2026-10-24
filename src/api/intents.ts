@@ -208,6 +208,14 @@ intentsRouter.get('/status/:depositAddress', async (req, res) => {
         const originTxHashes = swapDetails?.originChainTxHashes?.map(
             (tx) => tx.hash,
         );
+        // Index-aligned with the hash arrays, so the SDK can link each hash to 1Click's own explorer URL.
+        const destinationTxExplorerUrls =
+            swapDetails?.destinationChainTxHashes?.map(
+                (tx) => tx.explorerUrl || null,
+            );
+        const originTxExplorerUrls = swapDetails?.originChainTxHashes?.map(
+            (tx) => tx.explorerUrl || null,
+        );
 
         res.json({
             status,
@@ -216,6 +224,8 @@ intentsRouter.get('/status/:depositAddress', async (req, res) => {
             correlationId: response.correlationId,
             destinationTxHashes,
             originTxHashes,
+            destinationTxExplorerUrls,
+            originTxExplorerUrls,
         });
     } catch (error) {
         if (error instanceof ApiError) {
