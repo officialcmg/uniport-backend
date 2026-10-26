@@ -3,6 +3,7 @@ import type { Response } from 'express';
 export type ApiErrorCode =
     | 'VALIDATION_ERROR'
     | 'QUOTE_FAILED'
+    | 'QUOTE_UNVERIFIED'
     | 'DEPOSIT_SUBMISSION_FAILED'
     | 'STATUS_CHECK_FAILED'
     | 'INTERNAL_ERROR';

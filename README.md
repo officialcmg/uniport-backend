@@ -18,6 +18,7 @@ cp .env.example .env
 | `PORT` | No | `3001` | Port the server listens on |
 | `ONECLICK_BASE_URL` | No | `https://1click.chaindefuser.com` | 1Click API base URL (override for staging/testing) |
 | `UNIPORT_INTENTS_REFUND_ACCOUNT` | For `EXACT_OUTPUT` | — | Uniport-controlled Intents account that receives rounded surplus and failed-swap refunds |
+| `VERIFY_QUOTE_SIGNATURES` | No | `true` | Verify 1Click's signature on every quote, and that it was signed for this request, before returning it. Set to `false` only if 1Click changes its signing and quotes start failing with `QUOTE_UNVERIFIED` |
 
 ## Development
 

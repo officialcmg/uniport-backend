@@ -16,6 +16,10 @@ import {
     parseQuoteRequestBody,
     sendError,
 } from './contract.js';
+import {
+    findQuoteProblem,
+    isQuoteVerificationEnabled,
+} from './quote-verification.js';
 
 export const intentsRouter = Router();
 
@@ -96,6 +100,21 @@ intentsRouter.post('/quote', async (req, res) => {
         };
 
         const response = await OneClickService.getQuote(quoteRequest);
+
+        // Never hand a payer a deposit address that 1Click didn't sign for this request.
+        if (isQuoteVerificationEnabled()) {
+            const problem = findQuoteProblem(response, quoteRequest);
+            if (problem) {
+                console.error(
+                    `Rejected unverified quote (${problem}); correlationId=${response.correlationId}`
+                );
+                sendError(res, 502, {
+                    code: 'QUOTE_UNVERIFIED',
+                    message: 'Could not verify the quote. Please try again.',
+                });
+                return;
+            }
+        }
 
         res.json({
             quote: {
