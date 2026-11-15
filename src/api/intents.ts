@@ -6,6 +6,7 @@
  */
 
 import { Router } from 'express';
+import rateLimit from 'express-rate-limit';
 import {
     OneClickService,
     QuoteRequest,
@@ -20,6 +21,7 @@ import {
     findQuoteProblem,
     isQuoteVerificationEnabled,
 } from './quote-verification.js';
+import { recordQuote, recordStatus } from '../db/records.js';
 
 export const intentsRouter = Router();
 
@@ -39,7 +41,18 @@ const DEPOSIT_MODE_MAP = {
 // POST /api/quote
 // ============================================================================
 
-intentsRouter.post('/quote', async (req, res) => {
+// Live quotes create a deposit address at 1Click and a database row, so they get a
+// tighter limit than the global one. Dry quotes are only price checks and are exempt.
+const liveQuoteLimiter = rateLimit({
+    windowMs: 10 * 60 * 1000,
+    max: 150,
+    standardHeaders: true,
+    legacyHeaders: false,
+    skip: (req) => req.body?.dry === true,
+    message: { error: 'Too many requests, please try again later.' },
+});
+
+intentsRouter.post('/quote', liveQuoteLimiter, async (req, res) => {
     try {
         const parsed = parseQuoteRequestBody(req.body);
 
@@ -132,6 +145,27 @@ intentsRouter.post('/quote', async (req, res) => {
             },
             correlationId: response.correlationId,
         });
+
+        // Dry quotes have no deposit address and are never paid, so only live ones are kept.
+        if (!quoteRequest.dry && response.quote.depositAddress) {
+            recordQuote({
+                correlationId: response.correlationId,
+                depositAddress: response.quote.depositAddress,
+                depositMemo: response.quote.depositMemo,
+                swapType: quoteRequest.swapType,
+                originAsset,
+                destinationAsset,
+                amount,
+                amountIn: response.quote.amountIn,
+                amountOut: response.quote.amountOut,
+                minAmountOut: response.quote.minAmountOut,
+                amountOutUsd: response.quote.amountOutUsd,
+                recipient,
+                refundTo: quoteRequest.refundTo,
+                referral: quoteRequest.referral,
+                deadline: response.quote.deadline,
+            });
+        }
     } catch (error) {
         if (error instanceof ApiError) {
             sendError(res, error.status, {
@@ -245,6 +279,15 @@ intentsRouter.get('/status/:depositAddress', async (req, res) => {
             originTxHashes,
             destinationTxExplorerUrls,
             originTxExplorerUrls,
+        });
+
+        recordStatus({
+            depositAddress,
+            depositMemo: memo,
+            status,
+            correlationId: response.correlationId,
+            originTxHashes,
+            destinationTxHashes,
         });
     } catch (error) {
         if (error instanceof ApiError) {
