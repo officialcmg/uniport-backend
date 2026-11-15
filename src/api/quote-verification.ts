@@ -31,30 +31,33 @@ function decodeEd25519(value: string): Uint8Array<ArrayBuffer> {
  * The SDK's verifyQuoteSignature() does the Ed25519 check in plain JavaScript,
  * which costs tens of milliseconds of CPU: more than a Worker on Cloudflare's
  * free plan is allowed per request. The runtime's native Ed25519 gives the
- * same answer in a fraction of a millisecond, so it is tried first. If it does
- * not confirm the signature for any reason, the SDK's own check decides, so a
- * quote is never rejected only because the two disagree.
+ * same answer in a fraction of a millisecond, so it decides. The SDK's check
+ * is only used if the runtime cannot do Ed25519 at all.
  */
 async function signatureVerifies(response: QuoteResponse): Promise<boolean> {
+    let key: CryptoKey;
     try {
-        const key = await crypto.subtle.importKey(
+        key = await crypto.subtle.importKey(
             'raw',
             decodeEd25519(ONE_CLICK_PUBLIC_KEY),
             { name: 'Ed25519' },
             false,
             ['verify']
         );
-        const verified = await crypto.subtle.verify(
+    } catch {
+        return verifyQuoteSignature(response);
+    }
+    try {
+        return await crypto.subtle.verify(
             'Ed25519',
             key,
             decodeEd25519(response.signature),
             new TextEncoder().encode(quoteHash(response))
         );
-        if (verified) return true;
     } catch {
-        // Fall through to the SDK's check.
+        // A signature that cannot even be decoded is not valid.
+        return false;
     }
-    return verifyQuoteSignature(response);
 }
 
 // Fields that decide where funds go and how much moves.

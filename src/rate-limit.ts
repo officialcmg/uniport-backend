@@ -22,24 +22,31 @@ const LIVE_QUOTE_WINDOW_MS = 10 * 60 * 1000;
 
 /**
  * The key requests are counted under. Cloudflare sets CF-Connecting-IP itself,
- * so a client cannot forge it. An IPv6 client usually controls a whole /64 and
- * can change address at will, so IPv6 is counted per /64.
+ * so a client cannot forge it. An IPv6 customer is usually given a whole /56
+ * and can change address within it at will, so IPv6 is counted per /56.
  */
 export function rateLimitKey(req: Request): string {
     const header = req.headers['cf-connecting-ip'];
     const ip = (typeof header === 'string' && header.trim()) || 'unknown';
-    return ip.includes(':') ? ipv6Prefix64(ip) : ip;
+    return ip.includes(':') ? ipv6Prefix56(ip) : ip;
 }
 
-/** First four groups of an IPv6 address, e.g. "2001:db8:0:1::/64". */
-export function ipv6Prefix64(ip: string): string {
-    const [head, tail] = ip.toLowerCase().split('::');
-    const headGroups = head ? head.split(':') : [];
-    const tailGroups = tail ? tail.split(':') : [];
-    const missing = tail === undefined ? 0 : 8 - headGroups.length - tailGroups.length;
-    const groups = [...headGroups, ...Array(Math.max(0, missing)).fill('0'), ...tailGroups];
-    if (groups.length !== 8) return ip; // not a plain IPv6 address; count it as is
-    return `${groups.slice(0, 4).map((g) => g.replace(/^0+(?=.)/, '')).join(':')}::/64`;
+/** The /56 an IPv6 address belongs to, e.g. "2001:db8:0:100::/56". */
+export function ipv6Prefix56(ip: string): string {
+    const parts = ip.toLowerCase().split('::');
+    // IPv4-mapped and other dotted forms, or anything malformed, are counted as they are.
+    if (parts.length > 2 || ip.includes('.')) return ip;
+    const head = parts[0] ? parts[0].split(':') : [];
+    const tail = parts[1] ? parts[1].split(':') : [];
+    const missing = parts.length === 2 ? 8 - head.length - tail.length : 0;
+    if (missing < 0) return ip;
+    const groups = [...head, ...Array<string>(missing).fill('0'), ...tail];
+    if (groups.length !== 8 || !groups.every((group) => /^[0-9a-f]{1,4}$/.test(group))) {
+        return ip;
+    }
+    const [a, b, c, d] = groups.map((group) => parseInt(group, 16));
+    // 56 bits: the first three groups and the top half of the fourth.
+    return `${[a, b, c, d & 0xff00].map((n) => n.toString(16)).join(':')}::/56`;
 }
 
 export const globalLimiter: RequestHandler = async (req, res, next) => {
@@ -106,7 +113,11 @@ export class LiveQuoteLimiter extends DurableObject {
             await this.ctx.storage.setAlarm(now + windowMs);
         }
         window.count += 1;
-        await this.ctx.storage.put('window', window);
+        // Once over the limit the answer cannot change until the window ends,
+        // so stop writing: a flood must not use up the storage allowance.
+        if (window.count <= limit + 1) {
+            await this.ctx.storage.put('window', window);
+        }
         return {
             allowed: window.count <= limit,
             remaining: Math.max(0, limit - window.count),

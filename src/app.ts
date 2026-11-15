@@ -16,10 +16,10 @@ export function createApp(): express.Express {
     // CORS — open to all origins (SDK can be used from any domain)
     app.use(cors());
 
+    app.use(globalLimiter);
+
     // Parse JSON bodies
     app.use(express.json());
-
-    app.use(globalLimiter);
 
     app.get('/health', (_req, res) => {
         res.json({

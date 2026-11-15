@@ -29,7 +29,7 @@ cp .dev.vars.example .dev.vars
 | `UNIPORT_INTENTS_REFUND_ACCOUNT` | Secret or `vars` | For `EXACT_OUTPUT` | Uniport-controlled Intents account that receives rounded surplus and failed-swap refunds |
 | `ONECLICK_BASE_URL` | `vars` in `wrangler.jsonc` | No | 1Click API base URL (default `https://1click.chaindefuser.com`) |
 | `VERIFY_QUOTE_SIGNATURES` | `vars` | No | Verify 1Click's signature on every quote, and that it was signed for this request, before returning it (default `true`). Set to `false` only if 1Click changes its signing and quotes start failing with `QUOTE_UNVERIFIED` |
-| `HYPERDRIVE` | Binding in `wrangler.jsonc` | No | Hyperdrive config for the Neon database. Without it, or if the database is unreachable, the API works as normal and nothing is recorded |
+| `HYPERDRIVE` | Binding in `wrangler.jsonc` | For deploy | Hyperdrive config for the Neon database. Its id must be filled in before the first deploy. If the database is unreachable, the API works as normal and nothing is recorded |
 | `DATABASE_URL_UNPOOLED` | `.env.local`, for `npm run migrate` only | For migrations | Direct (non-pooled) Neon connection string |
 
 Secrets are set with `npx wrangler secret put <NAME>` for the deployed Worker and in `.dev.vars` for local development.
@@ -56,10 +56,11 @@ npm run smoke -- http://localhost:8787          # dry quotes only
 npm run smoke -- http://localhost:8787 --live   # also one real quote and a status call
 ```
 
-To record to a database locally, give `wrangler dev` a connection string for the Hyperdrive binding. Use a Neon development branch, not production:
+`wrangler dev` will not start without a Postgres connection string for the Hyperdrive binding. Use a Neon development branch, not production (`neon checkout dev --create` makes one and writes its URLs to `.env.local`):
 
 ```bash
-CLOUDFLARE_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE="postgresql://..." npm run dev
+export CLOUDFLARE_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE="postgresql://..."
+npm run dev
 ```
 
 ## API Endpoints
@@ -71,7 +72,7 @@ CLOUDFLARE_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE="postgresql://..." npm 
 | `POST` | `/api/deposit` | Submit a deposit transaction hash |
 | `GET` | `/api/status/:depositAddress` | Get swap execution status |
 
-Requests are limited to 100 per minute per IP across all endpoints; this limit is approximate and counted separately in each Cloudflare location. Live (non-dry) quotes are also limited to 150 per 10 minutes per IP, counted exactly. IPv6 clients are counted per /64.
+Requests are limited to 100 per minute per IP across all endpoints; this limit is approximate and counted separately in each Cloudflare location. Live (non-dry) quotes are also limited to 150 per 10 minutes per IP, counted exactly. IPv6 clients are counted per /56.
 
 ## Deployment (Cloudflare Workers)
 
@@ -91,7 +92,7 @@ npx wrangler hyperdrive create uniport-neon \
 # 3. Deploy. This creates the Worker, the Durable Object and the workers.dev URL.
 npm run deploy
 
-# 4. Set the secrets
+# 4. Set the secrets. Until NEAR_API_KEY is set, /api calls return 503.
 npx wrangler secret put NEAR_API_KEY
 npx wrangler secret put UNIPORT_INTENTS_REFUND_ACCOUNT
 
