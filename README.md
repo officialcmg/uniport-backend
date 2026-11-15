@@ -50,7 +50,7 @@ npm run dev
 | `POST` | `/api/deposit` | Submit a deposit transaction hash |
 | `GET` | `/api/status/:depositAddress` | Get swap execution status |
 
-Requests are limited to 100 per minute per IP across all endpoints. Live (non-dry) quotes are also limited to 30 per minute per IP.
+Requests are limited to 100 per minute per IP across all endpoints. Live (non-dry) quotes are also limited to 150 per 10 minutes per IP.
 
 ## Deployment (Railway)
 

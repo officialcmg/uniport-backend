@@ -44,8 +44,8 @@ const DEPOSIT_MODE_MAP = {
 // Live quotes create a deposit address at 1Click and a database row, so they get a
 // tighter limit than the global one. Dry quotes are only price checks and are exempt.
 const liveQuoteLimiter = rateLimit({
-    windowMs: 60 * 1000,
-    max: 30,
+    windowMs: 10 * 60 * 1000,
+    max: 150,
     standardHeaders: true,
     legacyHeaders: false,
     skip: (req) => req.body?.dry === true,
