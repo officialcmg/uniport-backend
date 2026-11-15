@@ -5,7 +5,8 @@ import dotenv from 'dotenv';
 import { OpenAPI } from '@defuse-protocol/one-click-sdk-typescript';
 import { intentsRouter } from './api/intents.js';
 
-dotenv.config();
+// .env.local is where `neon env pull` writes DATABASE_URL for local development.
+dotenv.config({ path: ['.env.local', '.env'] });
 
 const app = express();
 const PORT = process.env.PORT || 3001;

@@ -20,6 +20,7 @@ import {
     findQuoteProblem,
     isQuoteVerificationEnabled,
 } from './quote-verification.js';
+import { recordQuote, recordStatus } from '../db/records.js';
 
 export const intentsRouter = Router();
 
@@ -132,6 +133,27 @@ intentsRouter.post('/quote', async (req, res) => {
             },
             correlationId: response.correlationId,
         });
+
+        // Dry quotes have no deposit address and are never paid, so only live ones are kept.
+        if (!quoteRequest.dry && response.quote.depositAddress) {
+            recordQuote({
+                correlationId: response.correlationId,
+                depositAddress: response.quote.depositAddress,
+                depositMemo: response.quote.depositMemo,
+                swapType: quoteRequest.swapType,
+                originAsset,
+                destinationAsset,
+                amount,
+                amountIn: response.quote.amountIn,
+                amountOut: response.quote.amountOut,
+                minAmountOut: response.quote.minAmountOut,
+                amountOutUsd: response.quote.amountOutUsd,
+                recipient,
+                refundTo: quoteRequest.refundTo,
+                referral: quoteRequest.referral,
+                deadline: response.quote.deadline,
+            });
+        }
     } catch (error) {
         if (error instanceof ApiError) {
             sendError(res, error.status, {
@@ -245,6 +267,15 @@ intentsRouter.get('/status/:depositAddress', async (req, res) => {
             originTxHashes,
             destinationTxExplorerUrls,
             originTxExplorerUrls,
+        });
+
+        recordStatus({
+            depositAddress,
+            depositMemo: memo,
+            status,
+            correlationId: response.correlationId,
+            originTxHashes,
+            destinationTxHashes,
         });
     } catch (error) {
         if (error instanceof ApiError) {
