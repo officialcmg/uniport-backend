@@ -1,0 +1,120 @@
+/**
+ * Rate limiting. Workers run as many short-lived instances that share no
+ * memory, so counters cannot live in the process.
+ *
+ * - Every request: 100 per minute per IP, through the Workers Rate Limiting
+ *   binding. It is approximate and counted separately in each Cloudflare
+ *   location.
+ * - Live quotes: 150 per 10 minutes per IP. The binding only supports 10 and
+ *   60 second windows, so this one is counted exactly in a Durable Object,
+ *   one per IP.
+ *
+ * Both let the request through if the limiter itself fails.
+ */
+
+import type { Request, RequestHandler } from 'express';
+import { DurableObject, env } from 'cloudflare:workers';
+
+const TOO_MANY_REQUESTS = { error: 'Too many requests, please try again later.' };
+
+const LIVE_QUOTE_LIMIT = 150;
+const LIVE_QUOTE_WINDOW_MS = 10 * 60 * 1000;
+
+/**
+ * The key requests are counted under. Cloudflare sets CF-Connecting-IP itself,
+ * so a client cannot forge it. An IPv6 client usually controls a whole /64 and
+ * can change address at will, so IPv6 is counted per /64.
+ */
+export function rateLimitKey(req: Request): string {
+    const header = req.headers['cf-connecting-ip'];
+    const ip = (typeof header === 'string' && header.trim()) || 'unknown';
+    return ip.includes(':') ? ipv6Prefix64(ip) : ip;
+}
+
+/** First four groups of an IPv6 address, e.g. "2001:db8:0:1::/64". */
+export function ipv6Prefix64(ip: string): string {
+    const [head, tail] = ip.toLowerCase().split('::');
+    const headGroups = head ? head.split(':') : [];
+    const tailGroups = tail ? tail.split(':') : [];
+    const missing = tail === undefined ? 0 : 8 - headGroups.length - tailGroups.length;
+    const groups = [...headGroups, ...Array(Math.max(0, missing)).fill('0'), ...tailGroups];
+    if (groups.length !== 8) return ip; // not a plain IPv6 address; count it as is
+    return `${groups.slice(0, 4).map((g) => g.replace(/^0+(?=.)/, '')).join(':')}::/64`;
+}
+
+export const globalLimiter: RequestHandler = async (req, res, next) => {
+    try {
+        const { success } = await env.GLOBAL_LIMITER.limit({ key: rateLimitKey(req) });
+        if (!success) {
+            res.setHeader('Retry-After', '60');
+            res.status(429).json(TOO_MANY_REQUESTS);
+            return;
+        }
+    } catch (err) {
+        console.error('Rate limiter unavailable:', (err as Error).message);
+    }
+    next();
+};
+
+export const liveQuoteLimiter: RequestHandler = async (req, res, next) => {
+    // Dry quotes are only price checks and are not counted.
+    if (req.body?.dry === true) {
+        next();
+        return;
+    }
+    try {
+        const id = env.LIVE_QUOTE_LIMITER.idFromName(rateLimitKey(req));
+        const hit = await env.LIVE_QUOTE_LIMITER.get(id).hit(
+            LIVE_QUOTE_LIMIT,
+            LIVE_QUOTE_WINDOW_MS,
+        );
+        const resetSeconds = String(Math.ceil(hit.resetMs / 1000));
+        res.setHeader('RateLimit-Policy', `${LIVE_QUOTE_LIMIT};w=${LIVE_QUOTE_WINDOW_MS / 1000}`);
+        res.setHeader('RateLimit-Limit', String(LIVE_QUOTE_LIMIT));
+        res.setHeader('RateLimit-Remaining', String(hit.remaining));
+        res.setHeader('RateLimit-Reset', resetSeconds);
+        if (!hit.allowed) {
+            res.setHeader('Retry-After', resetSeconds);
+            res.status(429).json(TOO_MANY_REQUESTS);
+            return;
+        }
+    } catch (err) {
+        console.error('Live quote limiter unavailable:', (err as Error).message);
+    }
+    next();
+};
+
+interface LimitWindow {
+    start: number;
+    count: number;
+}
+
+/**
+ * Counts hits for one IP in a fixed window that starts at the first hit.
+ * A rejected hit still counts.
+ */
+export class LiveQuoteLimiter extends DurableObject {
+    async hit(
+        limit: number,
+        windowMs: number,
+    ): Promise<{ allowed: boolean; remaining: number; resetMs: number }> {
+        const now = Date.now();
+        let window = await this.ctx.storage.get<LimitWindow>('window');
+        if (!window || now - window.start >= windowMs) {
+            window = { start: now, count: 0 };
+            // Forget this IP once its window is over.
+            await this.ctx.storage.setAlarm(now + windowMs);
+        }
+        window.count += 1;
+        await this.ctx.storage.put('window', window);
+        return {
+            allowed: window.count <= limit,
+            remaining: Math.max(0, limit - window.count),
+            resetMs: window.start + windowMs - now,
+        };
+    }
+
+    async alarm(): Promise<void> {
+        await this.ctx.storage.deleteAll();
+    }
+}

@@ -6,7 +6,6 @@
  */
 
 import { Router } from 'express';
-import rateLimit from 'express-rate-limit';
 import {
     OneClickService,
     QuoteRequest,
@@ -22,8 +21,7 @@ import {
     isQuoteVerificationEnabled,
 } from './quote-verification.js';
 import { recordQuote, recordStatus } from '../db/records.js';
-
-export const intentsRouter = Router();
+import { liveQuoteLimiter } from '../rate-limit.js';
 
 const SWAP_TYPE_MAP = {
     EXACT_INPUT: QuoteRequest.swapType.EXACT_INPUT,
@@ -37,273 +35,268 @@ const DEPOSIT_MODE_MAP = {
     MEMO: QuoteRequest.depositMode.MEMO,
 } as const;
 
-// ============================================================================
-// POST /api/quote
-// ============================================================================
+export function createIntentsRouter(): Router {
+    const intentsRouter = Router();
 
-// Live quotes create a deposit address at 1Click and a database row, so they get a
-// tighter limit than the global one. Dry quotes are only price checks and are exempt.
-const liveQuoteLimiter = rateLimit({
-    windowMs: 10 * 60 * 1000,
-    max: 150,
-    standardHeaders: true,
-    legacyHeaders: false,
-    skip: (req) => req.body?.dry === true,
-    message: { error: 'Too many requests, please try again later.' },
-});
+    // ========================================================================
+    // POST /api/quote
+    // ========================================================================
 
-intentsRouter.post('/quote', liveQuoteLimiter, async (req, res) => {
-    try {
-        const parsed = parseQuoteRequestBody(req.body);
+    intentsRouter.post('/quote', liveQuoteLimiter, async (req, res) => {
+        try {
+            const parsed = parseQuoteRequestBody(req.body);
 
-        if (!parsed.value) {
-            sendError(res, 400, {
-                code: 'VALIDATION_ERROR',
-                message: 'Invalid quote request.',
-                details: parsed.errors,
-            });
-            return;
-        }
-
-        const {
-            dry,
-            swapType,
-            slippageTolerance,
-            depositMode,
-            originAsset,
-            destinationAsset,
-            amount,
-            refundTo,
-            recipient,
-            deadline,
-            referral,
-        } = parsed.value;
-
-        const isExactOutput = swapType === 'EXACT_OUTPUT';
-        const intentsRefundAccount =
-            process.env.UNIPORT_INTENTS_REFUND_ACCOUNT?.trim().toLowerCase();
-
-        if (isExactOutput && !intentsRefundAccount) {
-            sendError(res, 503, {
-                code: 'INTERNAL_ERROR',
-                message: 'Exact-output payments are not configured.',
-            });
-            return;
-        }
-
-        const quoteRequest: QuoteRequest = {
-            dry: dry ?? false,
-            swapType: swapType
-                ? SWAP_TYPE_MAP[swapType]
-                : QuoteRequest.swapType.EXACT_INPUT,
-            slippageTolerance: slippageTolerance ?? 100,
-            depositMode: depositMode ? DEPOSIT_MODE_MAP[depositMode] : undefined,
-            originAsset,
-            depositType: QuoteRequest.depositType.ORIGIN_CHAIN,
-            destinationAsset,
-            amount,
-            refundTo: isExactOutput ? intentsRefundAccount! : refundTo!,
-            refundType: isExactOutput
-                ? QuoteRequest.refundType.INTENTS
-                : QuoteRequest.refundType.ORIGIN_CHAIN,
-            recipient,
-            recipientType: QuoteRequest.recipientType.DESTINATION_CHAIN,
-            deadline: deadline ?? new Date(Date.now() + 3600000).toISOString(),
-            referral: referral ?? 'uniport',
-        };
-
-        const response = await OneClickService.getQuote(quoteRequest);
-
-        // Never hand a payer a deposit address that 1Click didn't sign for this request.
-        if (isQuoteVerificationEnabled()) {
-            const problem = findQuoteProblem(response, quoteRequest);
-            if (problem) {
-                console.error(
-                    `Rejected unverified quote (${problem}); correlationId=${response.correlationId}`
-                );
-                sendError(res, 502, {
-                    code: 'QUOTE_UNVERIFIED',
-                    message: 'Could not verify the quote. Please try again.',
+            if (!parsed.value) {
+                sendError(res, 400, {
+                    code: 'VALIDATION_ERROR',
+                    message: 'Invalid quote request.',
+                    details: parsed.errors,
                 });
                 return;
             }
-        }
 
-        res.json({
-            quote: {
-                depositAddress: response.quote.depositAddress ?? '',
-                depositMemo: response.quote.depositMemo,
-                amountIn: response.quote.amountIn,
-                amountInFormatted: response.quote.amountInFormatted,
-                minAmountIn: response.quote.minAmountIn,
-                amountOut: response.quote.amountOut,
-                amountOutFormatted: response.quote.amountOutFormatted,
-                amountOutUsd: response.quote.amountOutUsd,
-                minAmountOut: response.quote.minAmountOut,
-                deadline: response.quote.deadline,
-                timeWhenInactive: response.quote.timeWhenInactive,
-            },
-            correlationId: response.correlationId,
-        });
-
-        // Dry quotes have no deposit address and are never paid, so only live ones are kept.
-        if (!quoteRequest.dry && response.quote.depositAddress) {
-            recordQuote({
-                correlationId: response.correlationId,
-                depositAddress: response.quote.depositAddress,
-                depositMemo: response.quote.depositMemo,
-                swapType: quoteRequest.swapType,
+            const {
+                dry,
+                swapType,
+                slippageTolerance,
+                depositMode,
                 originAsset,
                 destinationAsset,
                 amount,
-                amountIn: response.quote.amountIn,
-                amountOut: response.quote.amountOut,
-                minAmountOut: response.quote.minAmountOut,
-                amountOutUsd: response.quote.amountOutUsd,
+                refundTo,
                 recipient,
-                refundTo: quoteRequest.refundTo,
-                referral: quoteRequest.referral,
-                deadline: response.quote.deadline,
+                deadline,
+                referral,
+            } = parsed.value;
+
+            const isExactOutput = swapType === 'EXACT_OUTPUT';
+            const intentsRefundAccount =
+                process.env.UNIPORT_INTENTS_REFUND_ACCOUNT?.trim().toLowerCase();
+
+            if (isExactOutput && !intentsRefundAccount) {
+                sendError(res, 503, {
+                    code: 'INTERNAL_ERROR',
+                    message: 'Exact-output payments are not configured.',
+                });
+                return;
+            }
+
+            const quoteRequest: QuoteRequest = {
+                dry: dry ?? false,
+                swapType: swapType
+                    ? SWAP_TYPE_MAP[swapType]
+                    : QuoteRequest.swapType.EXACT_INPUT,
+                slippageTolerance: slippageTolerance ?? 100,
+                depositMode: depositMode ? DEPOSIT_MODE_MAP[depositMode] : undefined,
+                originAsset,
+                depositType: QuoteRequest.depositType.ORIGIN_CHAIN,
+                destinationAsset,
+                amount,
+                refundTo: isExactOutput ? intentsRefundAccount! : refundTo!,
+                refundType: isExactOutput
+                    ? QuoteRequest.refundType.INTENTS
+                    : QuoteRequest.refundType.ORIGIN_CHAIN,
+                recipient,
+                recipientType: QuoteRequest.recipientType.DESTINATION_CHAIN,
+                deadline: deadline ?? new Date(Date.now() + 3600000).toISOString(),
+                referral: referral ?? 'uniport',
+            };
+
+            const response = await OneClickService.getQuote(quoteRequest);
+
+            // Never hand a payer a deposit address that 1Click didn't sign for this request.
+            if (isQuoteVerificationEnabled()) {
+                const problem = await findQuoteProblem(response, quoteRequest);
+                if (problem) {
+                    console.error(
+                        `Rejected unverified quote (${problem}); correlationId=${response.correlationId}`
+                    );
+                    sendError(res, 502, {
+                        code: 'QUOTE_UNVERIFIED',
+                        message: 'Could not verify the quote. Please try again.',
+                    });
+                    return;
+                }
+            }
+
+            res.json({
+                quote: {
+                    depositAddress: response.quote.depositAddress ?? '',
+                    depositMemo: response.quote.depositMemo,
+                    amountIn: response.quote.amountIn,
+                    amountInFormatted: response.quote.amountInFormatted,
+                    minAmountIn: response.quote.minAmountIn,
+                    amountOut: response.quote.amountOut,
+                    amountOutFormatted: response.quote.amountOutFormatted,
+                    amountOutUsd: response.quote.amountOutUsd,
+                    minAmountOut: response.quote.minAmountOut,
+                    deadline: response.quote.deadline,
+                    timeWhenInactive: response.quote.timeWhenInactive,
+                },
+                correlationId: response.correlationId,
+            });
+
+            // Dry quotes have no deposit address and are never paid, so only live ones are kept.
+            if (!quoteRequest.dry && response.quote.depositAddress) {
+                recordQuote({
+                    correlationId: response.correlationId,
+                    depositAddress: response.quote.depositAddress,
+                    depositMemo: response.quote.depositMemo,
+                    swapType: quoteRequest.swapType,
+                    originAsset,
+                    destinationAsset,
+                    amount,
+                    amountIn: response.quote.amountIn,
+                    amountOut: response.quote.amountOut,
+                    minAmountOut: response.quote.minAmountOut,
+                    amountOutUsd: response.quote.amountOutUsd,
+                    recipient,
+                    refundTo: quoteRequest.refundTo,
+                    referral: quoteRequest.referral,
+                    deadline: response.quote.deadline,
+                });
+            }
+        } catch (error) {
+            if (error instanceof ApiError) {
+                sendError(res, error.status, {
+                    code: 'QUOTE_FAILED',
+                    message: 'Quote failed.',
+                    details: error.body,
+                });
+                return;
+            }
+            console.error('Quote error:', error);
+            sendError(res, 500, {
+                code: 'INTERNAL_ERROR',
+                message: 'Internal server error.',
             });
         }
-    } catch (error) {
-        if (error instanceof ApiError) {
-            sendError(res, error.status, {
-                code: 'QUOTE_FAILED',
-                message: 'Quote failed.',
-                details: error.body,
+    });
+
+    // ============================================================================
+    // POST /api/deposit
+    // ============================================================================
+
+    intentsRouter.post('/deposit', async (req, res) => {
+        try {
+            const parsed = parseDepositRequestBody(req.body);
+
+            if (!parsed.value) {
+                sendError(res, 400, {
+                    code: 'VALIDATION_ERROR',
+                    message: 'Invalid deposit submission.',
+                    details: parsed.errors,
+                });
+                return;
+            }
+
+            const { txHash, depositAddress, memo, nearSenderAccount } =
+                parsed.value;
+
+            await OneClickService.submitDepositTx({
+                txHash,
+                depositAddress,
+                memo,
+                nearSenderAccount,
             });
-            return;
-        }
-        console.error('Quote error:', error);
-        sendError(res, 500, {
-            code: 'INTERNAL_ERROR',
-            message: 'Internal server error.',
-        });
-    }
-});
 
-// ============================================================================
-// POST /api/deposit
-// ============================================================================
-
-intentsRouter.post('/deposit', async (req, res) => {
-    try {
-        const parsed = parseDepositRequestBody(req.body);
-
-        if (!parsed.value) {
-            sendError(res, 400, {
-                code: 'VALIDATION_ERROR',
-                message: 'Invalid deposit submission.',
-                details: parsed.errors,
+            res.json({ success: true });
+        } catch (error) {
+            if (error instanceof ApiError) {
+                sendError(res, error.status, {
+                    code: 'DEPOSIT_SUBMISSION_FAILED',
+                    message: 'Submit deposit failed.',
+                    details: error.body,
+                });
+                return;
+            }
+            console.error('Deposit error:', error);
+            sendError(res, 500, {
+                code: 'INTERNAL_ERROR',
+                message: 'Internal server error.',
             });
-            return;
         }
+    });
 
-        const { txHash, depositAddress, memo, nearSenderAccount } =
-            parsed.value;
+    // ============================================================================
+    // GET /api/status/:depositAddress
+    // ============================================================================
 
-        await OneClickService.submitDepositTx({
-            txHash,
-            depositAddress,
-            memo,
-            nearSenderAccount,
-        });
+    intentsRouter.get('/status/:depositAddress', async (req, res) => {
+        try {
+            const { depositAddress } = req.params;
+            const memo = req.query.memo as string | undefined;
 
-        res.json({ success: true });
-    } catch (error) {
-        if (error instanceof ApiError) {
-            sendError(res, error.status, {
-                code: 'DEPOSIT_SUBMISSION_FAILED',
-                message: 'Submit deposit failed.',
-                details: error.body,
-            });
-            return;
-        }
-        console.error('Deposit error:', error);
-        sendError(res, 500, {
-            code: 'INTERNAL_ERROR',
-            message: 'Internal server error.',
-        });
-    }
-});
+            if (!depositAddress) {
+                sendError(res, 400, {
+                    code: 'VALIDATION_ERROR',
+                    message: 'Missing depositAddress parameter.',
+                });
+                return;
+            }
 
-// ============================================================================
-// GET /api/status/:depositAddress
-// ============================================================================
+            const response = await OneClickService.getExecutionStatus(
+                depositAddress,
+                memo,
+            );
 
-intentsRouter.get('/status/:depositAddress', async (req, res) => {
-    try {
-        const { depositAddress } = req.params;
-        const memo = req.query.memo as string | undefined;
+            const observedAt = new Date();
+            const status = response.status;
+            const isComplete = ['SUCCESS', 'REFUNDED', 'FAILED'].includes(status);
+            const isSuccess = status === 'SUCCESS';
 
-        if (!depositAddress) {
-            sendError(res, 400, {
-                code: 'VALIDATION_ERROR',
-                message: 'Missing depositAddress parameter.',
-            });
-            return;
-        }
-
-        const response = await OneClickService.getExecutionStatus(
-            depositAddress,
-            memo,
-        );
-
-        const observedAt = new Date();
-        const status = response.status;
-        const isComplete = ['SUCCESS', 'REFUNDED', 'FAILED'].includes(status);
-        const isSuccess = status === 'SUCCESS';
-
-        const swapDetails = response.swapDetails;
-        const destinationTxHashes = swapDetails?.destinationChainTxHashes?.map(
-            (tx) => tx.hash,
-        );
-        const originTxHashes = swapDetails?.originChainTxHashes?.map(
-            (tx) => tx.hash,
-        );
-        // Index-aligned with the hash arrays, so the SDK can link each hash to 1Click's own explorer URL.
-        const destinationTxExplorerUrls =
-            swapDetails?.destinationChainTxHashes?.map(
+            const swapDetails = response.swapDetails;
+            const destinationTxHashes = swapDetails?.destinationChainTxHashes?.map(
+                (tx) => tx.hash,
+            );
+            const originTxHashes = swapDetails?.originChainTxHashes?.map(
+                (tx) => tx.hash,
+            );
+            // Index-aligned with the hash arrays, so the SDK can link each hash to 1Click's own explorer URL.
+            const destinationTxExplorerUrls =
+                swapDetails?.destinationChainTxHashes?.map(
+                    (tx) => tx.explorerUrl || null,
+                );
+            const originTxExplorerUrls = swapDetails?.originChainTxHashes?.map(
                 (tx) => tx.explorerUrl || null,
             );
-        const originTxExplorerUrls = swapDetails?.originChainTxHashes?.map(
-            (tx) => tx.explorerUrl || null,
-        );
 
-        res.json({
-            status,
-            isComplete,
-            isSuccess,
-            correlationId: response.correlationId,
-            destinationTxHashes,
-            originTxHashes,
-            destinationTxExplorerUrls,
-            originTxExplorerUrls,
-        });
-
-        recordStatus({
-            depositAddress,
-            depositMemo: memo,
-            status,
-            correlationId: response.correlationId,
-            originTxHashes,
-            destinationTxHashes,
-            observedAt,
-        });
-    } catch (error) {
-        if (error instanceof ApiError) {
-            sendError(res, error.status, {
-                code: 'STATUS_CHECK_FAILED',
-                message: 'Status check failed.',
-                details: error.body,
+            res.json({
+                status,
+                isComplete,
+                isSuccess,
+                correlationId: response.correlationId,
+                destinationTxHashes,
+                originTxHashes,
+                destinationTxExplorerUrls,
+                originTxExplorerUrls,
             });
-            return;
+
+            recordStatus({
+                depositAddress,
+                depositMemo: memo,
+                status,
+                correlationId: response.correlationId,
+                originTxHashes,
+                destinationTxHashes,
+                observedAt,
+            });
+        } catch (error) {
+            if (error instanceof ApiError) {
+                sendError(res, error.status, {
+                    code: 'STATUS_CHECK_FAILED',
+                    message: 'Status check failed.',
+                    details: error.body,
+                });
+                return;
+            }
+            console.error('Status error:', error);
+            sendError(res, 500, {
+                code: 'INTERNAL_ERROR',
+                message: 'Internal server error.',
+            });
         }
-        console.error('Status error:', error);
-        sendError(res, 500, {
-            code: 'INTERNAL_ERROR',
-            message: 'Internal server error.',
-        });
-    }
-});
+    });
+
+    return intentsRouter;
+}

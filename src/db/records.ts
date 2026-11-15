@@ -5,7 +5,7 @@
  * throws, so a slow or unavailable database cannot delay or fail a request.
  */
 
-import { getPool } from './pool.js';
+import { runInBackground } from './hyperdrive.js';
 
 export interface QuoteRecord {
     correlationId?: string;
@@ -36,34 +36,22 @@ export interface StatusRecord {
     observedAt?: Date;
 }
 
-function run(label: string, text: string, values: unknown[]): void {
-    // A malformed DATABASE_URL makes pool.query throw before it returns a promise.
-    try {
-        const pool = getPool();
-        if (!pool) return;
-        pool.query(text, values).catch((err: Error) => {
-            console.error(`Could not record ${label}:`, err.message);
-        });
-    } catch (err) {
-        console.error(`Could not record ${label}:`, (err as Error).message);
-    }
-}
-
 function json(value: unknown): string | null {
     return value === undefined ? null : JSON.stringify(value);
 }
 
 /** Saves a live quote. A repeat of the same deposit address and memo is ignored. */
 export function recordQuote(quote: QuoteRecord): void {
-    run(
-        'quote',
-        `INSERT INTO quotes (
+    runInBackground([
+        {
+            label: 'quote',
+            text: `INSERT INTO quotes (
             correlation_id, deposit_address, deposit_memo, swap_type,
             origin_asset, destination_asset, amount, amount_in, amount_out,
             min_amount_out, amount_out_usd, recipient, refund_to, referral, deadline
         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
         ON CONFLICT (deposit_address, deposit_memo) DO NOTHING`,
-        [
+            values: [
             quote.correlationId ?? null,
             quote.depositAddress,
             quote.depositMemo ?? '',
@@ -79,8 +67,9 @@ export function recordQuote(quote: QuoteRecord): void {
             quote.refundTo,
             quote.referral ?? null,
             quote.deadline ?? null,
-        ],
-    );
+            ],
+        },
+    ]);
 }
 
 /**
@@ -98,9 +87,11 @@ export function recordStatus(seen: StatusRecord): void {
     const destinationTxHashes = json(seen.destinationTxHashes);
     const observedAt = seen.observedAt ?? new Date();
 
-    run(
-        'status event',
-        `INSERT INTO quote_status_events (
+    // One call, so both statements share a connection and run in this order.
+    runInBackground([
+        {
+            label: 'status event',
+            text: `INSERT INTO quote_status_events (
             deposit_address, deposit_memo, status, correlation_id,
             origin_tx_hashes, destination_tx_hashes, observed_at
         )
@@ -115,7 +106,7 @@ export function recordStatus(seen: StatusRecord): void {
             WHERE deposit_address = $1 AND deposit_memo = $2
             ORDER BY observed_at DESC, id DESC LIMIT 1
         )`,
-        [
+            values: [
             seen.depositAddress,
             memo,
             seen.status,
@@ -123,12 +114,11 @@ export function recordStatus(seen: StatusRecord): void {
             originTxHashes,
             destinationTxHashes,
             observedAt,
-        ],
-    );
-
-    run(
-        'quote status',
-        `UPDATE quotes SET
+            ],
+        },
+        {
+            label: 'quote status',
+            text: `UPDATE quotes SET
             status_updated_at = CASE
                 WHEN status IS DISTINCT FROM $3 THEN $6::timestamptz ELSE status_updated_at
             END,
@@ -141,13 +131,14 @@ export function recordStatus(seen: StatusRecord): void {
           AND (status IS DISTINCT FROM $3
                OR origin_tx_hashes IS DISTINCT FROM COALESCE($4::jsonb, origin_tx_hashes)
                OR destination_tx_hashes IS DISTINCT FROM COALESCE($5::jsonb, destination_tx_hashes))`,
-        [
+            values: [
             seen.depositAddress,
             memo,
             seen.status,
             originTxHashes,
             destinationTxHashes,
             observedAt,
-        ],
-    );
+            ],
+        },
+    ]);
 }

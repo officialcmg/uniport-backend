@@ -1,0 +1,9 @@
+# Local development secrets for `npm run dev` (wrangler dev). Copy to .dev.vars.
+# For the deployed Worker, set these with `npx wrangler secret put <NAME>`.
+
+# Required: your NEAR Intents API key
+# Get one at https://partners.near-intents.org/
+NEAR_API_KEY=your-near-api-key-here
+
+# Required for EXACT_OUTPUT: named or implicit account registered with intents.near
+UNIPORT_INTENTS_REFUND_ACCOUNT=refunds.uniport.near
