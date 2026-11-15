@@ -1,0 +1,10 @@
+# Local development secrets for `npm run dev` (wrangler dev). Copy to .dev.vars.
+# For the deployed Worker, set these with `npx wrangler secret put <NAME>`.
+
+# Required: your NEAR Intents API key
+# Get one at https://partners.near-intents.org/
+NEAR_API_KEY=your-near-api-key-here
+
+# Optional: Neon Postgres connection string (pooled). When set, live quotes and
+# payment status changes are recorded. Use a development branch, not production.
+# DATABASE_URL=postgresql://user:password@your-endpoint-pooler.region.aws.neon.tech/neondb?sslmode=require

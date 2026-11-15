@@ -1,5 +1,3 @@
-import type { Response } from 'express';
-
 export type ApiErrorCode =
     | 'VALIDATION_ERROR'
     | 'QUOTE_FAILED'
@@ -59,14 +57,6 @@ function isPositiveIntegerString(value: unknown): value is string {
 
 function optionalString(value: unknown): string | undefined {
     return isNonEmptyString(value) ? value : undefined;
-}
-
-export function sendError(
-    res: Response,
-    status: number,
-    error: ApiErrorResponse
-): void {
-    res.status(status).json(error);
 }
 
 export function parseQuoteRequestBody(body: unknown): {
