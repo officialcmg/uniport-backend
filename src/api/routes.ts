@@ -290,7 +290,7 @@ export async function handleStatus(
         const quoted = response.quoteResponse?.quote;
         recordStatus(env, ctx, {
             depositAddress: quoted?.depositAddress || depositAddress,
-            depositMemo: quoted?.depositAddress ? quoted.depositMemo : memo,
+            depositMemo: quoted?.depositMemo ?? memo,
             status,
             correlationId: response.correlationId,
             originTxHashes,
