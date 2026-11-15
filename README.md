@@ -4,12 +4,12 @@ Backend API proxy for the Uniport SDK, running on Cloudflare Workers. Securely s
 
 ## How it runs
 
-The backend is a Cloudflare Worker: a [Hono](https://hono.dev) app in `src/app.ts`, with `src/worker.ts` as the entry and `wrangler.jsonc` holding the configuration. It calls the 1Click API with `fetch` (`src/one-click.ts`); the 1Click SDK is used for its types and for hashing quotes when verifying their signatures.
+The backend is a Cloudflare Worker with no web framework and one small runtime dependency. `src/worker.ts` is the entry (CORS, rate limiting, routing), `src/api/routes.ts` holds the three routes, and `wrangler.jsonc` the configuration. It is written to stay well inside the free plan's 10 ms of CPU per request; see [CPU time](#cpu-time) before adding dependencies.
 
 | Piece | What it does |
 |-------|--------------|
 | Worker | Serves the API |
-| Neon Postgres (`DATABASE_URL`) | Where quotes and status changes are recorded, written over HTTPS with Neon's serverless driver |
+| Neon Postgres (`DATABASE_URL`) | Where quotes and status changes are recorded, written over Neon's SQL-over-HTTP endpoint |
 | Rate Limiting binding (`GLOBAL_LIMITER`) | 100 requests per minute per IP |
 | Durable Object (`LiveQuoteLimiter`) | 150 live quotes per 10 minutes per IP |
 
@@ -52,6 +52,7 @@ Run `npm run migrate` before deploying a change that adds a migration. Migration
 ```bash
 npm run dev        # wrangler dev, on http://localhost:8787
 npm run build      # type-check and bundle without deploying
+npm test           # checks the quote hash and signature verification against the 1Click SDK
 npm run smoke -- http://localhost:8787          # dry quotes only
 npm run smoke -- http://localhost:8787 --live   # also one real quote and a status call
 ```
@@ -105,4 +106,18 @@ npx wrangler rollback             # go back to the previous version
 
 ### CPU time
 
-The free Workers plan allows 10 ms of CPU per request (time spent waiting on 1Click or the database does not count). This backend is built to fit: it uses Hono, calls 1Click with `fetch`, verifies signatures with the runtime's native Ed25519, and writes to Neon over HTTPS. Measured on the deployed Worker, a quote takes about 4 ms and a status poll about 3 ms, with the first few requests after a deploy reaching 10 to 20 ms while the code warms up. Avoid adding the 1Click SDK's request layer (axios), an Express-style framework, or a Postgres connection per request: each of those alone costs 10 to 25 ms.
+The free Workers plan allows 10 ms of CPU per request; time spent waiting on 1Click or the database does not count. Measured on the deployed Worker with `wrangler tail`, a quote uses about 2 ms (7 ms at most, straight after a deploy) and a status poll about 1 ms.
+
+It stays there because very little code runs, or is even loaded, per request. Each of these was measured and removed:
+
+| Removed | CPU it cost per request |
+|---------|-------------------------|
+| Express on the Node compatibility layer | 7 to 12 ms |
+| The 1Click SDK's request layer (axios) | about 10 ms |
+| The SDK's JavaScript Ed25519 check (tweetnacl) | 20 to 30 ms |
+| A Postgres connection per request, even through Hyperdrive | 10 to 25 ms |
+| Bundling the SDK, a router and Neon's driver (460 KiB against 37 KiB now) | several ms on the first requests of each instance |
+
+So: 1Click and Neon are called with `fetch`; signatures are verified with the runtime's native Ed25519 and SHA-256; the 1Click SDK is a dev dependency, used for its types and by the tests. `src/api/quote-hash.ts` reproduces the SDK's quote hash, and `npm test` checks it against the SDK and against real signed quotes, so run the tests after every SDK upgrade.
+
+Before adding a runtime dependency, deploy and check `cpuTime` in `npx wrangler tail --format json`.

@@ -1,10 +1,9 @@
 /**
- * Calls to the 1Click API.
+ * Calls to the 1Click API, with fetch.
  *
- * The SDK's own request layer (axios) costs more CPU per call than a Worker on
- * Cloudflare's free plan is allowed for a whole request, so the three
- * endpoints this backend uses are called with fetch directly. The SDK is still
- * the source of the request and response types and of the quote hash.
+ * The 1Click SDK is not used at runtime: its request layer (axios) alone costs
+ * more CPU per call than a Worker on Cloudflare's free plan is allowed for a
+ * whole request. It is a dev dependency, for the request and response types.
  */
 
 import type {
@@ -28,23 +27,26 @@ export class OneClickError extends Error {
 }
 
 async function request<T>(
+    env: Env,
     method: 'GET' | 'POST',
     path: string,
     options: { query?: Record<string, string | undefined>; body?: unknown } = {},
 ): Promise<T> {
-    const base = (process.env.ONECLICK_BASE_URL || DEFAULT_BASE_URL).replace(/\/+$/, '');
-    const url = new URL(base + path);
-    for (const [name, value] of Object.entries(options.query ?? {})) {
-        if (value !== undefined) url.searchParams.set(name, value);
-    }
+    let url = (env.ONECLICK_BASE_URL || DEFAULT_BASE_URL).replace(/\/+$/, '') + path;
+    const query = Object.entries(options.query ?? {})
+        .filter((entry): entry is [string, string] => entry[1] !== undefined)
+        .map(([name, value]) => `${encodeURIComponent(name)}=${encodeURIComponent(value)}`);
+    if (query.length > 0) url += `?${query.join('&')}`;
+
+    const headers: Record<string, string> = {
+        Accept: 'application/json',
+        Authorization: `Bearer ${env.NEAR_API_KEY}`,
+    };
+    if (options.body !== undefined) headers['Content-Type'] = 'application/json';
 
     const response = await fetch(url, {
         method,
-        headers: {
-            Accept: 'application/json',
-            Authorization: `Bearer ${process.env.NEAR_API_KEY}`,
-            ...(options.body !== undefined ? { 'Content-Type': 'application/json' } : {}),
-        },
+        headers,
         body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
         signal: AbortSignal.timeout(TIMEOUT_MS),
     });
@@ -61,17 +63,18 @@ async function request<T>(
     return body as T;
 }
 
-export function getQuote(quoteRequest: QuoteRequest): Promise<QuoteResponse> {
-    return request('POST', '/v0/quote', { body: quoteRequest });
+export function getQuote(env: Env, quoteRequest: QuoteRequest): Promise<QuoteResponse> {
+    return request(env, 'POST', '/v0/quote', { body: quoteRequest });
 }
 
 export function getExecutionStatus(
+    env: Env,
     depositAddress: string,
     depositMemo?: string,
 ): Promise<GetExecutionStatusResponse> {
-    return request('GET', '/v0/status', { query: { depositAddress, depositMemo } });
+    return request(env, 'GET', '/v0/status', { query: { depositAddress, depositMemo } });
 }
 
-export function submitDepositTx(deposit: SubmitDepositTxRequest): Promise<unknown> {
-    return request('POST', '/v0/deposit/submit', { body: deposit });
+export function submitDepositTx(env: Env, deposit: SubmitDepositTxRequest): Promise<unknown> {
+    return request(env, 'POST', '/v0/deposit/submit', { body: deposit });
 }

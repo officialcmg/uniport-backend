@@ -3,7 +3,6 @@
     "name": "uniport-backend",
     "main": "src/worker.ts",
     "compatibility_date": "2026-11-01",
-    "compatibility_flags": ["nodejs_compat"],
     "workers_dev": true,
     "observability": { "enabled": true },
     "upload_source_maps": true,

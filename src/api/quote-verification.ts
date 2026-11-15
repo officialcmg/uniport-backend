@@ -7,17 +7,14 @@
  * this payment, not replayed from another one with a different recipient.
  */
 
-import {
-    QuoteRequest,
-    QuoteResponse,
-    quoteHash,
-    verifyQuoteSignature,
-} from '@defuse-protocol/one-click-sdk-typescript';
+import type { QuoteRequest, QuoteResponse } from '@defuse-protocol/one-click-sdk-typescript';
 import { base58 } from '@scure/base';
+import { quoteHashBytes } from './quote-hash.js';
 
 // 1Click's signing key. Copied from the SDK, which does not export it; check
-// it against the SDK's ONE_CLICK_MANAGER_PUB_KEY whenever the SDK is upgraded.
-const ONE_CLICK_PUBLIC_KEY = 'ed25519:reYaWhvwu8Jzo3WUM3zhn6VrhuMEF4eADL17qtRVifc';
+// it against the SDK's ONE_CLICK_MANAGER_PUB_KEY whenever the SDK is upgraded
+// (`npm test` does).
+export const ONE_CLICK_PUBLIC_KEY = 'ed25519:reYaWhvwu8Jzo3WUM3zhn6VrhuMEF4eADL17qtRVifc';
 
 function decodeEd25519(value: string): Uint8Array<ArrayBuffer> {
     const decoded = base58.decode(value.replace(/^ed25519:/, ''));
@@ -25,37 +22,31 @@ function decodeEd25519(value: string): Uint8Array<ArrayBuffer> {
     return new Uint8Array(decoded);
 }
 
+let publicKey: Promise<CryptoKey> | undefined;
+
 /**
- * Checks 1Click's signature on a quote.
- *
- * The SDK's verifyQuoteSignature() does the Ed25519 check in plain JavaScript,
- * which costs tens of milliseconds of CPU: more than a Worker on Cloudflare's
- * free plan is allowed per request. The runtime's native Ed25519 gives the
- * same answer in a fraction of a millisecond, so it decides. The SDK's check
- * is only used if the runtime cannot do Ed25519 at all.
+ * Checks 1Click's Ed25519 signature on a quote with the runtime's native
+ * crypto. The SDK's verifyQuoteSignature() does the same check in plain
+ * JavaScript, which costs tens of milliseconds of CPU: more than a Worker on
+ * Cloudflare's free plan is allowed per request.
  */
-async function signatureVerifies(response: QuoteResponse): Promise<boolean> {
-    let key: CryptoKey;
+export async function signatureVerifies(response: QuoteResponse): Promise<boolean> {
     try {
-        key = await crypto.subtle.importKey(
+        publicKey ??= crypto.subtle.importKey(
             'raw',
             decodeEd25519(ONE_CLICK_PUBLIC_KEY),
             { name: 'Ed25519' },
             false,
             ['verify']
         );
-    } catch {
-        return verifyQuoteSignature(response);
-    }
-    try {
         return await crypto.subtle.verify(
             'Ed25519',
-            key,
+            await publicKey,
             decodeEd25519(response.signature),
-            new TextEncoder().encode(quoteHash(response))
+            await quoteHashBytes(response)
         );
     } catch {
-        // A signature that cannot even be decoded is not valid.
+        // A signature or quote that cannot even be decoded is not valid.
         return false;
     }
 }
@@ -80,8 +71,8 @@ const BOUND_FIELDS = [
 const UNVERIFIABLE_SIGNATURE_ASSETS = new Set(['nep141:btc.omft.near']);
 
 /** Set VERIFY_QUOTE_SIGNATURES=false to switch verification off (e.g. if 1Click changes its signing). */
-export function isQuoteVerificationEnabled(): boolean {
-    return process.env.VERIFY_QUOTE_SIGNATURES?.trim().toLowerCase() !== 'false';
+export function isQuoteVerificationEnabled(env: Env): boolean {
+    return env.VERIFY_QUOTE_SIGNATURES?.trim().toLowerCase() !== 'false';
 }
 
 /** Returns why the quote can't be trusted, or null if it can. */

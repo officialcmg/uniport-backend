@@ -1,110 +1,62 @@
 /**
- * Uniport Intents API routes
+ * The /api routes.
  *
  * Proxies cross-chain swap requests to the 1Click API.
  * The API key is stored server-side — frontend SDK never touches it.
  */
 
-import { Hono, type Context } from 'hono';
-import type { ContentfulStatusCode } from 'hono/utils/http-status';
-import { QuoteRequest } from '@defuse-protocol/one-click-sdk-typescript';
-import {
-    parseDepositRequestBody,
-    parseQuoteRequestBody,
-    type ApiErrorResponse,
-} from './contract.js';
-import {
-    findQuoteProblem,
-    isQuoteVerificationEnabled,
-} from './quote-verification.js';
+import type { QuoteRequest } from '@defuse-protocol/one-click-sdk-typescript';
+import { parseDepositRequestBody, parseQuoteRequestBody } from './contract.js';
+import { findQuoteProblem, isQuoteVerificationEnabled } from './quote-verification.js';
 import { recordQuote, recordStatus } from '../db/records.js';
-import {
-    OneClickError,
-    getExecutionStatus,
-    getQuote,
-    submitDepositTx,
-} from '../one-click.js';
-import { limitLiveQuote } from '../rate-limit.js';
+import { errorResponse, json, readJsonBody } from '../http.js';
+import { OneClickError, getExecutionStatus, getQuote, submitDepositTx } from '../one-click.js';
+import { checkLiveQuoteLimit } from '../rate-limit.js';
 
-export const intentsRoutes = new Hono();
-
-const SWAP_TYPE_MAP = {
-    EXACT_INPUT: QuoteRequest.swapType.EXACT_INPUT,
-    EXACT_OUTPUT: QuoteRequest.swapType.EXACT_OUTPUT,
-    FLEX_INPUT: QuoteRequest.swapType.FLEX_INPUT,
-    ANY_INPUT: QuoteRequest.swapType.ANY_INPUT,
-} as const;
-
-const DEPOSIT_MODE_MAP = {
-    SIMPLE: QuoteRequest.depositMode.SIMPLE,
-    MEMO: QuoteRequest.depositMode.MEMO,
-} as const;
-
-const MAX_BODY_BYTES = 100 * 1024;
-
-function sendError(c: Context, status: number, error: ApiErrorResponse): Response {
-    return c.json(error, status as ContentfulStatusCode);
-}
-
-/**
- * Reads a JSON request body. Returns the parsed value, or the error response
- * to send. A body that is not sent as JSON is treated as empty, so it fails
- * validation with the list of missing fields.
- */
-async function readJsonBody(c: Context): Promise<{ body: unknown } | { error: Response }> {
-    const tooLarge = () => ({
-        error: sendError(c, 413, {
-            code: 'VALIDATION_ERROR',
-            message: 'Request body is too large.',
-        }),
-    });
-    if (Number(c.req.header('content-length') ?? 0) > MAX_BODY_BYTES) return tooLarge();
-
-    const raw = await c.req.arrayBuffer();
-    if (raw.byteLength > MAX_BODY_BYTES) return tooLarge();
-
-    if (!/^application\/json\b/i.test(c.req.header('content-type') ?? '')) return { body: {} };
-    if (raw.byteLength === 0) return { body: {} };
-
-    try {
-        const body: unknown = JSON.parse(new TextDecoder().decode(raw));
-        if (typeof body === 'object' && body !== null) return { body };
-    } catch {
-        // Falls through to the error below.
-    }
-    return {
-        error: sendError(c, 400, {
-            code: 'VALIDATION_ERROR',
-            message: 'Request body must be valid JSON.',
-        }),
-    };
-}
+// The SDK declares these request fields as enums. Its runtime code is not
+// loaded (see one-click.ts), so the values are written out and typed here.
+type Enum<Field extends keyof QuoteRequest> = NonNullable<QuoteRequest[Field]>;
+const EXACT_INPUT = 'EXACT_INPUT' as Enum<'swapType'>;
+const ORIGIN_CHAIN_DEPOSIT = 'ORIGIN_CHAIN' as Enum<'depositType'>;
+const ORIGIN_CHAIN_REFUND = 'ORIGIN_CHAIN' as Enum<'refundType'>;
+const INTENTS_REFUND = 'INTENTS' as Enum<'refundType'>;
+const DESTINATION_CHAIN = 'DESTINATION_CHAIN' as Enum<'recipientType'>;
 
 // ============================================================================
 // POST /api/quote
 // ============================================================================
 
-intentsRoutes.post('/quote', async (c) => {
-    const read = await readJsonBody(c);
+export async function handleQuote(
+    request: Request,
+    env: Env,
+    ctx: ExecutionContext,
+): Promise<Response> {
+    const read = await readJsonBody(request);
     if ('error' in read) return read.error;
 
     // Live quotes create a deposit address at 1Click and a database row, so they
     // get a tighter limit than the global one. Dry quotes are only price checks
     // and are not counted.
+    let limitHeaders: Record<string, string> = {};
     if ((read.body as { dry?: unknown }).dry !== true) {
-        const limited = await limitLiveQuote(c);
-        if (limited) return limited;
+        const limit = await checkLiveQuoteLimit(request, env);
+        if ('limited' in limit) return limit.limited;
+        limitHeaders = limit.headers;
     }
 
     try {
         const parsed = parseQuoteRequestBody(read.body);
 
         if (!parsed.value) {
-            return sendError(c, 400, {
-                code: 'VALIDATION_ERROR',
-                message: 'Invalid quote request.',
-                details: parsed.errors,
-            });
+            return errorResponse(
+                400,
+                {
+                    code: 'VALIDATION_ERROR',
+                    message: 'Invalid quote request.',
+                    details: parsed.errors,
+                },
+                limitHeaders,
+            );
         }
 
         const {
@@ -122,56 +74,59 @@ intentsRoutes.post('/quote', async (c) => {
         } = parsed.value;
 
         const isExactOutput = swapType === 'EXACT_OUTPUT';
-        const intentsRefundAccount =
-            process.env.UNIPORT_INTENTS_REFUND_ACCOUNT?.trim().toLowerCase();
+        const intentsRefundAccount = env.UNIPORT_INTENTS_REFUND_ACCOUNT?.trim().toLowerCase();
 
         if (isExactOutput && !intentsRefundAccount) {
-            return sendError(c, 503, {
-                code: 'INTERNAL_ERROR',
-                message: 'Exact-output payments are not configured.',
-            });
+            return errorResponse(
+                503,
+                {
+                    code: 'INTERNAL_ERROR',
+                    message: 'Exact-output payments are not configured.',
+                },
+                limitHeaders,
+            );
         }
 
         const quoteRequest: QuoteRequest = {
             dry: dry ?? false,
-            swapType: swapType
-                ? SWAP_TYPE_MAP[swapType]
-                : QuoteRequest.swapType.EXACT_INPUT,
+            swapType: (swapType as Enum<'swapType'> | undefined) ?? EXACT_INPUT,
             slippageTolerance: slippageTolerance ?? 100,
-            depositMode: depositMode ? DEPOSIT_MODE_MAP[depositMode] : undefined,
+            depositMode: depositMode as Enum<'depositMode'> | undefined,
             originAsset,
-            depositType: QuoteRequest.depositType.ORIGIN_CHAIN,
+            depositType: ORIGIN_CHAIN_DEPOSIT,
             destinationAsset,
             amount,
             refundTo: isExactOutput ? intentsRefundAccount! : refundTo!,
-            refundType: isExactOutput
-                ? QuoteRequest.refundType.INTENTS
-                : QuoteRequest.refundType.ORIGIN_CHAIN,
+            refundType: isExactOutput ? INTENTS_REFUND : ORIGIN_CHAIN_REFUND,
             recipient,
-            recipientType: QuoteRequest.recipientType.DESTINATION_CHAIN,
+            recipientType: DESTINATION_CHAIN,
             deadline: deadline ?? new Date(Date.now() + 3600000).toISOString(),
             referral: referral ?? 'uniport',
         };
 
-        const response = await getQuote(quoteRequest);
+        const response = await getQuote(env, quoteRequest);
 
         // Never hand a payer a deposit address that 1Click didn't sign for this request.
-        if (isQuoteVerificationEnabled()) {
+        if (isQuoteVerificationEnabled(env)) {
             const problem = await findQuoteProblem(response, quoteRequest);
             if (problem) {
                 console.error(
                     `Rejected unverified quote (${problem}); correlationId=${response.correlationId}`
                 );
-                return sendError(c, 502, {
-                    code: 'QUOTE_UNVERIFIED',
-                    message: 'Could not verify the quote. Please try again.',
-                });
+                return errorResponse(
+                    502,
+                    {
+                        code: 'QUOTE_UNVERIFIED',
+                        message: 'Could not verify the quote. Please try again.',
+                    },
+                    limitHeaders,
+                );
             }
         }
 
         // Dry quotes have no deposit address and are never paid, so only live ones are kept.
         if (!quoteRequest.dry && response.quote.depositAddress) {
-            recordQuote({
+            recordQuote(env, ctx, {
                 correlationId: response.correlationId,
                 depositAddress: response.quote.depositAddress,
                 depositMemo: response.quote.depositMemo,
@@ -190,51 +145,63 @@ intentsRoutes.post('/quote', async (c) => {
             });
         }
 
-        return c.json({
-            quote: {
-                depositAddress: response.quote.depositAddress ?? '',
-                depositMemo: response.quote.depositMemo,
-                amountIn: response.quote.amountIn,
-                amountInFormatted: response.quote.amountInFormatted,
-                minAmountIn: response.quote.minAmountIn,
-                amountOut: response.quote.amountOut,
-                amountOutFormatted: response.quote.amountOutFormatted,
-                amountOutUsd: response.quote.amountOutUsd,
-                minAmountOut: response.quote.minAmountOut,
-                deadline: response.quote.deadline,
-                timeWhenInactive: response.quote.timeWhenInactive,
+        return json(
+            {
+                quote: {
+                    depositAddress: response.quote.depositAddress ?? '',
+                    depositMemo: response.quote.depositMemo,
+                    amountIn: response.quote.amountIn,
+                    amountInFormatted: response.quote.amountInFormatted,
+                    minAmountIn: response.quote.minAmountIn,
+                    amountOut: response.quote.amountOut,
+                    amountOutFormatted: response.quote.amountOutFormatted,
+                    amountOutUsd: response.quote.amountOutUsd,
+                    minAmountOut: response.quote.minAmountOut,
+                    deadline: response.quote.deadline,
+                    timeWhenInactive: response.quote.timeWhenInactive,
+                },
+                correlationId: response.correlationId,
             },
-            correlationId: response.correlationId,
-        });
+            200,
+            limitHeaders,
+        );
     } catch (error) {
         if (error instanceof OneClickError) {
-            return sendError(c, error.status, {
-                code: 'QUOTE_FAILED',
-                message: 'Quote failed.',
-                details: error.body,
-            });
+            return errorResponse(
+                error.status,
+                {
+                    code: 'QUOTE_FAILED',
+                    message: 'Quote failed.',
+                    details: error.body,
+                },
+                limitHeaders,
+            );
         }
         console.error('Quote error:', error);
-        return sendError(c, 500, {
-            code: 'INTERNAL_ERROR',
-            message: 'Internal server error.',
-        });
+        return errorResponse(
+            500,
+            {
+                code: 'INTERNAL_ERROR',
+                message: 'Internal server error.',
+            },
+            limitHeaders,
+        );
     }
-});
+}
 
 // ============================================================================
 // POST /api/deposit
 // ============================================================================
 
-intentsRoutes.post('/deposit', async (c) => {
-    const read = await readJsonBody(c);
+export async function handleDeposit(request: Request, env: Env): Promise<Response> {
+    const read = await readJsonBody(request);
     if ('error' in read) return read.error;
 
     try {
         const parsed = parseDepositRequestBody(read.body);
 
         if (!parsed.value) {
-            return sendError(c, 400, {
+            return errorResponse(400, {
                 code: 'VALIDATION_ERROR',
                 message: 'Invalid deposit submission.',
                 details: parsed.errors,
@@ -243,47 +210,42 @@ intentsRoutes.post('/deposit', async (c) => {
 
         const { txHash, depositAddress, memo, nearSenderAccount } = parsed.value;
 
-        await submitDepositTx({
+        await submitDepositTx(env, {
             txHash,
             depositAddress,
             memo,
             nearSenderAccount,
         });
 
-        return c.json({ success: true });
+        return json({ success: true });
     } catch (error) {
         if (error instanceof OneClickError) {
-            return sendError(c, error.status, {
+            return errorResponse(error.status, {
                 code: 'DEPOSIT_SUBMISSION_FAILED',
                 message: 'Submit deposit failed.',
                 details: error.body,
             });
         }
         console.error('Deposit error:', error);
-        return sendError(c, 500, {
+        return errorResponse(500, {
             code: 'INTERNAL_ERROR',
             message: 'Internal server error.',
         });
     }
-});
+}
 
 // ============================================================================
 // GET /api/status/:depositAddress
 // ============================================================================
 
-intentsRoutes.get('/status/:depositAddress', async (c) => {
+export async function handleStatus(
+    depositAddress: string,
+    memo: string | undefined,
+    env: Env,
+    ctx: ExecutionContext,
+): Promise<Response> {
     try {
-        const depositAddress = c.req.param('depositAddress');
-        const memo = c.req.query('memo');
-
-        if (!depositAddress) {
-            return sendError(c, 400, {
-                code: 'VALIDATION_ERROR',
-                message: 'Missing depositAddress parameter.',
-            });
-        }
-
-        const response = await getExecutionStatus(depositAddress, memo);
+        const response = await getExecutionStatus(env, depositAddress, memo);
 
         const observedAt = new Date();
         const status = response.status;
@@ -306,7 +268,7 @@ intentsRoutes.get('/status/:depositAddress', async (c) => {
             (tx) => tx.explorerUrl || null,
         );
 
-        recordStatus({
+        recordStatus(env, ctx, {
             depositAddress,
             depositMemo: memo,
             status,
@@ -316,7 +278,7 @@ intentsRoutes.get('/status/:depositAddress', async (c) => {
             observedAt,
         });
 
-        return c.json({
+        return json({
             status,
             isComplete,
             isSuccess,
@@ -328,16 +290,16 @@ intentsRoutes.get('/status/:depositAddress', async (c) => {
         });
     } catch (error) {
         if (error instanceof OneClickError) {
-            return sendError(c, error.status, {
+            return errorResponse(error.status, {
                 code: 'STATUS_CHECK_FAILED',
                 message: 'Status check failed.',
                 details: error.body,
             });
         }
         console.error('Status error:', error);
-        return sendError(c, 500, {
+        return errorResponse(500, {
             code: 'INTERNAL_ERROR',
             message: 'Internal server error.',
         });
     }
-});
+}
