@@ -6,6 +6,7 @@
  */
 
 import { Router } from 'express';
+import rateLimit from 'express-rate-limit';
 import {
     OneClickService,
     QuoteRequest,
@@ -40,7 +41,18 @@ const DEPOSIT_MODE_MAP = {
 // POST /api/quote
 // ============================================================================
 
-intentsRouter.post('/quote', async (req, res) => {
+// Live quotes create a deposit address at 1Click and a database row, so they get a
+// tighter limit than the global one. Dry quotes are only price checks and are exempt.
+const liveQuoteLimiter = rateLimit({
+    windowMs: 60 * 1000,
+    max: 30,
+    standardHeaders: true,
+    legacyHeaders: false,
+    skip: (req) => req.body?.dry === true,
+    message: { error: 'Too many requests, please try again later.' },
+});
+
+intentsRouter.post('/quote', liveQuoteLimiter, async (req, res) => {
     try {
         const parsed = parseQuoteRequestBody(req.body);
 
