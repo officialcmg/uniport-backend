@@ -35,11 +35,16 @@ export interface StatusRecord {
 }
 
 function run(label: string, text: string, values: unknown[]): void {
-    const pool = getPool();
-    if (!pool) return;
-    pool.query(text, values).catch((err: Error) => {
-        console.error(`Could not record ${label}:`, err.message);
-    });
+    // A malformed DATABASE_URL makes pool.query throw before it returns a promise.
+    try {
+        const pool = getPool();
+        if (!pool) return;
+        pool.query(text, values).catch((err: Error) => {
+            console.error(`Could not record ${label}:`, err.message);
+        });
+    } catch (err) {
+        console.error(`Could not record ${label}:`, (err as Error).message);
+    }
 }
 
 function json(value: unknown): string | null {
