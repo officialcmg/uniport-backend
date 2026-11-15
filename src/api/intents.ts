@@ -250,6 +250,7 @@ intentsRouter.get('/status/:depositAddress', async (req, res) => {
             memo,
         );
 
+        const observedAt = new Date();
         const status = response.status;
         const isComplete = ['SUCCESS', 'REFUNDED', 'FAILED'].includes(status);
         const isSuccess = status === 'SUCCESS';
@@ -288,6 +289,7 @@ intentsRouter.get('/status/:depositAddress', async (req, res) => {
             correlationId: response.correlationId,
             originTxHashes,
             destinationTxHashes,
+            observedAt,
         });
     } catch (error) {
         if (error instanceof ApiError) {

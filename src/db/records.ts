@@ -32,6 +32,8 @@ export interface StatusRecord {
     correlationId?: string;
     originTxHashes?: string[];
     destinationTxHashes?: string[];
+    /** When the status was read from 1Click. Defaults to now. */
+    observedAt?: Date;
 }
 
 function run(label: string, text: string, values: unknown[]): void {
@@ -85,23 +87,33 @@ export function recordQuote(quote: QuoteRecord): void {
  * Records a status seen for a deposit. Clients poll, so an event row is only
  * written when the status differs from the last one recorded; the quote row
  * always carries the latest status and transaction hashes.
+ *
+ * Writes run in the background and can reach the database out of order, so
+ * each carries the time the status was observed. An observation older than
+ * one already recorded is dropped rather than overwriting it.
  */
 export function recordStatus(seen: StatusRecord): void {
     const memo = seen.depositMemo ?? '';
     const originTxHashes = json(seen.originTxHashes);
     const destinationTxHashes = json(seen.destinationTxHashes);
+    const observedAt = seen.observedAt ?? new Date();
 
     run(
         'status event',
         `INSERT INTO quote_status_events (
             deposit_address, deposit_memo, status, correlation_id,
-            origin_tx_hashes, destination_tx_hashes
+            origin_tx_hashes, destination_tx_hashes, observed_at
         )
-        SELECT $1, $2, $3, $4, $5::jsonb, $6::jsonb
-        WHERE $3 IS DISTINCT FROM (
+        SELECT $1, $2, $3, $4, $5::jsonb, $6::jsonb, $7::timestamptz
+        WHERE NOT EXISTS (
+            SELECT 1 FROM quote_status_events
+            WHERE deposit_address = $1 AND deposit_memo = $2
+              AND observed_at > $7::timestamptz
+        )
+        AND $3 IS DISTINCT FROM (
             SELECT status FROM quote_status_events
             WHERE deposit_address = $1 AND deposit_memo = $2
-            ORDER BY id DESC LIMIT 1
+            ORDER BY observed_at DESC, id DESC LIMIT 1
         )`,
         [
             seen.depositAddress,
@@ -110,6 +122,7 @@ export function recordStatus(seen: StatusRecord): void {
             seen.correlationId ?? null,
             originTxHashes,
             destinationTxHashes,
+            observedAt,
         ],
     );
 
@@ -117,15 +130,24 @@ export function recordStatus(seen: StatusRecord): void {
         'quote status',
         `UPDATE quotes SET
             status_updated_at = CASE
-                WHEN status IS DISTINCT FROM $3 THEN now() ELSE status_updated_at
+                WHEN status IS DISTINCT FROM $3 THEN $6::timestamptz ELSE status_updated_at
             END,
             status = $3,
+            status_observed_at = $6::timestamptz,
             origin_tx_hashes = COALESCE($4::jsonb, origin_tx_hashes),
             destination_tx_hashes = COALESCE($5::jsonb, destination_tx_hashes)
         WHERE deposit_address = $1 AND deposit_memo = $2
+          AND (status_observed_at IS NULL OR status_observed_at <= $6::timestamptz)
           AND (status IS DISTINCT FROM $3
                OR origin_tx_hashes IS DISTINCT FROM COALESCE($4::jsonb, origin_tx_hashes)
                OR destination_tx_hashes IS DISTINCT FROM COALESCE($5::jsonb, destination_tx_hashes))`,
-        [seen.depositAddress, memo, seen.status, originTxHashes, destinationTxHashes],
+        [
+            seen.depositAddress,
+            memo,
+            seen.status,
+            originTxHashes,
+            destinationTxHashes,
+            observedAt,
+        ],
     );
 }
