@@ -23,25 +23,20 @@
     },
     "dependencies": {
         "@defuse-protocol/one-click-sdk-typescript": "^0.1.26",
+        "@neondatabase/serverless": "^1.2.1",
         "@scure/base": "^2.4.0",
-        "cors": "^2.8.5",
-        "express": "^4.18.2",
-        "pg": "^8.23.1"
+        "hono": "^4.13.18"
     },
     "devDependencies": {
         "@cloudflare/workers-types": "^5.20261115.1",
         "@neon/config": "^1.14.0",
         "@neon/env": "^2.1.3",
-        "@types/cors": "^2.8.17",
-        "@types/express": "^4.17.21",
         "@types/node": "^20.10.0",
         "@types/pg": "^8.23.1",
         "dotenv": "^16.4.5",
+        "pg": "^8.23.1",
         "tsx": "^4.7.0",
         "typescript": "^5.3.3",
         "wrangler": "^4.162.0"
-    },
-    "overrides": {
-        "iconv-lite": "0.6.3"
     }
 }

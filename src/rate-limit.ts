@@ -12,7 +12,7 @@
  * Both let the request through if the limiter itself fails.
  */
 
-import type { Request, RequestHandler } from 'express';
+import type { Context, MiddlewareHandler } from 'hono';
 import { DurableObject, env } from 'cloudflare:workers';
 
 const TOO_MANY_REQUESTS = { error: 'Too many requests, please try again later.' };
@@ -25,9 +25,8 @@ const LIVE_QUOTE_WINDOW_MS = 10 * 60 * 1000;
  * so a client cannot forge it. An IPv6 customer is usually given a whole /56
  * and can change address within it at will, so IPv6 is counted per /56.
  */
-export function rateLimitKey(req: Request): string {
-    const header = req.headers['cf-connecting-ip'];
-    const ip = (typeof header === 'string' && header.trim()) || 'unknown';
+export function rateLimitKey(c: Context): string {
+    const ip = c.req.header('cf-connecting-ip')?.trim() || 'unknown';
     return ip.includes(':') ? ipv6Prefix56(ip) : ip;
 }
 
@@ -49,47 +48,46 @@ export function ipv6Prefix56(ip: string): string {
     return `${[a, b, c, d & 0xff00].map((n) => n.toString(16)).join(':')}::/56`;
 }
 
-export const globalLimiter: RequestHandler = async (req, res, next) => {
+export const globalLimiter: MiddlewareHandler = async (c, next) => {
+    let allowed = true;
     try {
-        const { success } = await env.GLOBAL_LIMITER.limit({ key: rateLimitKey(req) });
-        if (!success) {
-            res.setHeader('Retry-After', '60');
-            res.status(429).json(TOO_MANY_REQUESTS);
-            return;
-        }
+        allowed = (await env.GLOBAL_LIMITER.limit({ key: rateLimitKey(c) })).success;
     } catch (err) {
         console.error('Rate limiter unavailable:', (err as Error).message);
     }
-    next();
+    if (!allowed) {
+        c.header('Retry-After', '60');
+        return c.json(TOO_MANY_REQUESTS, 429);
+    }
+    await next();
 };
 
-export const liveQuoteLimiter: RequestHandler = async (req, res, next) => {
-    // Dry quotes are only price checks and are not counted.
-    if (req.body?.dry === true) {
-        next();
-        return;
-    }
+/**
+ * Counts one live quote for the caller. Returns a 429 response if they are
+ * over the limit, otherwise undefined, having set the RateLimit headers on
+ * whatever response follows.
+ */
+export async function limitLiveQuote(c: Context): Promise<Response | undefined> {
     try {
-        const id = env.LIVE_QUOTE_LIMITER.idFromName(rateLimitKey(req));
+        const id = env.LIVE_QUOTE_LIMITER.idFromName(rateLimitKey(c));
         const hit = await env.LIVE_QUOTE_LIMITER.get(id).hit(
             LIVE_QUOTE_LIMIT,
             LIVE_QUOTE_WINDOW_MS,
         );
         const resetSeconds = String(Math.ceil(hit.resetMs / 1000));
-        res.setHeader('RateLimit-Policy', `${LIVE_QUOTE_LIMIT};w=${LIVE_QUOTE_WINDOW_MS / 1000}`);
-        res.setHeader('RateLimit-Limit', String(LIVE_QUOTE_LIMIT));
-        res.setHeader('RateLimit-Remaining', String(hit.remaining));
-        res.setHeader('RateLimit-Reset', resetSeconds);
+        c.header('RateLimit-Policy', `${LIVE_QUOTE_LIMIT};w=${LIVE_QUOTE_WINDOW_MS / 1000}`);
+        c.header('RateLimit-Limit', String(LIVE_QUOTE_LIMIT));
+        c.header('RateLimit-Remaining', String(hit.remaining));
+        c.header('RateLimit-Reset', resetSeconds);
         if (!hit.allowed) {
-            res.setHeader('Retry-After', resetSeconds);
-            res.status(429).json(TOO_MANY_REQUESTS);
-            return;
+            c.header('Retry-After', resetSeconds);
+            return c.json(TOO_MANY_REQUESTS, 429);
         }
     } catch (err) {
         console.error('Live quote limiter unavailable:', (err as Error).message);
     }
-    next();
-};
+    return undefined;
+}
 
 interface LimitWindow {
     start: number;

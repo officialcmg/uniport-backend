@@ -8,13 +8,11 @@
     "observability": { "enabled": true },
     "upload_source_maps": true,
     "vars": {
-        "ONECLICK_BASE_URL": "https://1click.chaindefuser.com"
+        "ONECLICK_BASE_URL": "https://1click.chaindefuser.com",
+        // The address uniport.eth resolves to. NEAR Intents does not resolve ENS
+        // names, so the address itself is used, in lowercase.
+        "UNIPORT_INTENTS_REFUND_ACCOUNT": "0x2f43a54f931b95053c3dda5f4637065aa0c3c494"
     },
-    "hyperdrive": [
-        // Create with `wrangler hyperdrive create` (see README) and paste the id here.
-        // Local dev reads CLOUDFLARE_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE instead.
-        { "binding": "HYPERDRIVE", "id": "REPLACE_WITH_HYPERDRIVE_ID" }
-    ],
     "ratelimits": [
         // 100 requests per minute per IP. Only 10 and 60 second periods exist.
         {

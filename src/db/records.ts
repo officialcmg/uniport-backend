@@ -5,7 +5,7 @@
  * throws, so a slow or unavailable database cannot delay or fail a request.
  */
 
-import { runInBackground } from './hyperdrive.js';
+import { runInBackground } from './background.js';
 
 export interface QuoteRecord {
     correlationId?: string;
@@ -35,6 +35,16 @@ export interface StatusRecord {
     /** When the status was read from 1Click. Defaults to now. */
     observedAt?: Date;
 }
+
+/**
+ * What this Worker instance last wrote for each deposit. Clients poll the
+ * status every few seconds and it rarely changes, so an observation identical
+ * to the last one written is skipped without touching the database. It is
+ * only a shortcut: another instance, or this one after a restart, goes to the
+ * database, where the statements below make repeats harmless.
+ */
+const lastRecorded = new Map<string, string>();
+const MAX_REMEMBERED = 500;
 
 function json(value: unknown): string | null {
     return value === undefined ? null : JSON.stringify(value);
@@ -87,8 +97,31 @@ export function recordStatus(seen: StatusRecord): void {
     const destinationTxHashes = json(seen.destinationTxHashes);
     const observedAt = seen.observedAt ?? new Date();
 
-    // One call, so both statements share a connection and run in this order.
+    const key = `${seen.depositAddress}|${memo}`;
+    const fingerprint = `${seen.status}|${originTxHashes}|${destinationTxHashes}`;
+    if (lastRecorded.get(key) === fingerprint) return;
+
+    // Remembered straight away, so polls arriving while this write is still
+    // running do not each start their own; forgotten again if it fails.
+    lastRecorded.delete(key);
+    lastRecorded.set(key, fingerprint);
+    for (const oldest of lastRecorded.keys()) {
+        if (lastRecorded.size <= MAX_REMEMBERED) break;
+        lastRecorded.delete(oldest);
+    }
+    const forgetIfFailed = (applied: boolean) => {
+        if (!applied && lastRecorded.get(key) === fingerprint) lastRecorded.delete(key);
+    };
+
+    // One call, so the statements run in this order in one transaction.
     runInBackground([
+        {
+            // Writes for the same deposit from different Worker instances wait
+            // for each other, so two cannot both decide the status is new.
+            label: 'status lock',
+            text: 'SELECT pg_advisory_xact_lock(hashtextextended($1, 0))',
+            values: [key],
+        },
         {
             label: 'status event',
             text: `INSERT INTO quote_status_events (
@@ -140,5 +173,5 @@ export function recordStatus(seen: StatusRecord): void {
             observedAt,
             ],
         },
-    ]);
+    ], forgetIfFailed);
 }

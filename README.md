@@ -4,12 +4,12 @@ Backend API proxy for the Uniport SDK, running on Cloudflare Workers. Securely s
 
 ## How it runs
 
-The backend is a Cloudflare Worker. The Express app in `src/app.ts` runs through Cloudflare's Node.js HTTP server support; `src/worker.ts` is the entry and `wrangler.jsonc` holds the configuration.
+The backend is a Cloudflare Worker: a [Hono](https://hono.dev) app in `src/app.ts`, with `src/worker.ts` as the entry and `wrangler.jsonc` holding the configuration. It calls the 1Click API with `fetch` (`src/one-click.ts`); the 1Click SDK is used for its types and for hashing quotes when verifying their signatures.
 
 | Piece | What it does |
 |-------|--------------|
 | Worker | Serves the API |
-| Hyperdrive (`HYPERDRIVE`) | Connection pool to Neon Postgres, where quotes and status changes are recorded |
+| Neon Postgres (`DATABASE_URL`) | Where quotes and status changes are recorded, written over HTTPS with Neon's serverless driver |
 | Rate Limiting binding (`GLOBAL_LIMITER`) | 100 requests per minute per IP |
 | Durable Object (`LiveQuoteLimiter`) | 150 live quotes per 10 minutes per IP |
 
@@ -26,10 +26,10 @@ cp .dev.vars.example .dev.vars
 | Name | Where | Required | Description |
 |------|-------|----------|-------------|
 | `NEAR_API_KEY` | Secret | **Yes** | Your NEAR Intents API key. Get one at [partners.near-intents.org](https://partners.near-intents.org/). Without it every `/api` call returns 503 |
-| `UNIPORT_INTENTS_REFUND_ACCOUNT` | Secret or `vars` | For `EXACT_OUTPUT` | Uniport-controlled Intents account that receives rounded surplus and failed-swap refunds |
+| `UNIPORT_INTENTS_REFUND_ACCOUNT` | `vars` in `wrangler.jsonc` | For `EXACT_OUTPUT` | Uniport-controlled NEAR Intents account that receives rounded surplus and failed-swap refunds: a NEAR account or an EVM address. ENS names are not resolved; 1Click accepts any well-formed name, including ones nobody controls |
 | `ONECLICK_BASE_URL` | `vars` in `wrangler.jsonc` | No | 1Click API base URL (default `https://1click.chaindefuser.com`) |
 | `VERIFY_QUOTE_SIGNATURES` | `vars` | No | Verify 1Click's signature on every quote, and that it was signed for this request, before returning it (default `true`). Set to `false` only if 1Click changes its signing and quotes start failing with `QUOTE_UNVERIFIED` |
-| `HYPERDRIVE` | Binding in `wrangler.jsonc` | For deploy | Hyperdrive config for the Neon database. Its id must be filled in before the first deploy. If the database is unreachable, the API works as normal and nothing is recorded |
+| `DATABASE_URL` | Secret | No | Neon connection string (pooled). When set, live quotes and payment status changes are recorded. Without it, or if the database is unreachable, the API works as normal and nothing is recorded |
 | `DATABASE_URL_UNPOOLED` | `.env.local`, for `npm run migrate` only | For migrations | Direct (non-pooled) Neon connection string |
 
 Secrets are set with `npx wrangler secret put <NAME>` for the deployed Worker and in `.dev.vars` for local development.
@@ -56,12 +56,7 @@ npm run smoke -- http://localhost:8787          # dry quotes only
 npm run smoke -- http://localhost:8787 --live   # also one real quote and a status call
 ```
 
-`wrangler dev` will not start without a Postgres connection string for the Hyperdrive binding. Use a Neon development branch, not production (`neon checkout dev --create` makes one and writes its URLs to `.env.local`):
-
-```bash
-export CLOUDFLARE_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE="postgresql://..."
-npm run dev
-```
+To record to a database locally, add `DATABASE_URL` to `.dev.vars`. Use a Neon development branch, not production (`neon checkout dev --create` makes one and writes its URLs to `.env.local`).
 
 ## API Endpoints
 
@@ -82,21 +77,14 @@ First-time setup, once per Cloudflare account:
 # 1. Sign in (or set CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID)
 npx wrangler login
 
-# 2. Create the Hyperdrive config from Neon's direct (non-pooled) connection string.
-#    This app only writes, so query caching is off.
-npx wrangler hyperdrive create uniport-neon \
-  --connection-string="$DATABASE_URL_UNPOOLED" \
-  --caching-disabled --origin-connection-limit 5
-#    Paste the printed id into "hyperdrive" in wrangler.jsonc.
-
-# 3. Deploy. This creates the Worker, the Durable Object and the workers.dev URL.
+# 2. Deploy. This creates the Worker, the Durable Object and the workers.dev URL.
 npm run deploy
 
-# 4. Set the secrets. Until NEAR_API_KEY is set, /api calls return 503.
+# 3. Set the secrets. Until NEAR_API_KEY is set, /api calls return 503.
 npx wrangler secret put NEAR_API_KEY
-npx wrangler secret put UNIPORT_INTENTS_REFUND_ACCOUNT
+npx wrangler secret put DATABASE_URL    # Neon's pooled connection string
 
-# 5. Check it
+# 4. Check it
 npm run smoke -- https://uniport-backend.<your-subdomain>.workers.dev --live
 ```
 
@@ -111,6 +99,10 @@ Then set the SDK's default backend URL (`DEFAULT_HOSTED_BACKEND_URL` in `uniport
 Useful afterwards:
 
 ```bash
-npx wrangler tail        # live logs
-npx wrangler rollback    # go back to the previous version
+npx wrangler tail --format json   # live logs, with cpuTime per request
+npx wrangler rollback             # go back to the previous version
 ```
+
+### CPU time
+
+The free Workers plan allows 10 ms of CPU per request (time spent waiting on 1Click or the database does not count). This backend is built to fit: it uses Hono, calls 1Click with `fetch`, verifies signatures with the runtime's native Ed25519, and writes to Neon over HTTPS. Measured on the deployed Worker, a quote takes about 4 ms and a status poll about 3 ms, with the first few requests after a deploy reaching 10 to 20 ms while the code warms up. Avoid adding the 1Click SDK's request layer (axios), an Express-style framework, or a Postgres connection per request: each of those alone costs 10 to 25 ms.
