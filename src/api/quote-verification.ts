@@ -46,7 +46,9 @@ export async function signatureVerifies(response: QuoteResponse): Promise<boolea
             await quoteHashBytes(response)
         );
     } catch {
-        // A signature or quote that cannot even be decoded is not valid.
+        // A signature or quote that cannot even be decoded is not valid. If it
+        // was the key import that failed, try it again on the next quote.
+        publicKey?.catch(() => (publicKey = undefined));
         return false;
     }
 }

@@ -59,6 +59,7 @@ async function request<T>(
         // Not JSON; keep the raw text.
     }
 
+    // Anything but a 2xx is a failure, including a redirect or an empty 3xx.
     if (!response.ok) throw new OneClickError(response.status, body);
     return body as T;
 }

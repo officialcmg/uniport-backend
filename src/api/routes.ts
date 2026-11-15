@@ -22,6 +22,25 @@ const ORIGIN_CHAIN_REFUND = 'ORIGIN_CHAIN' as Enum<'refundType'>;
 const INTENTS_REFUND = 'INTENTS' as Enum<'refundType'>;
 const DESTINATION_CHAIN = 'DESTINATION_CHAIN' as Enum<'recipientType'>;
 
+/** The status to answer with when 1Click fails: its own if it is an error status, else 502. */
+function upstreamErrorStatus(error: OneClickError): number {
+    return error.status >= 400 && error.status <= 599 ? error.status : 502;
+}
+
+/** Answers a failure that did not come from 1Click as an error response. */
+function unexpectedError(what: string, error: unknown, headers?: Record<string, string>): Response {
+    const timedOut = error instanceof Error && error.name === 'TimeoutError';
+    console.error(`${what} error:`, error);
+    return errorResponse(
+        timedOut ? 504 : 500,
+        {
+            code: 'INTERNAL_ERROR',
+            message: timedOut ? '1Click did not respond in time.' : 'Internal server error.',
+        },
+        headers,
+    );
+}
+
 // ============================================================================
 // POST /api/quote
 // ============================================================================
@@ -148,8 +167,10 @@ export async function handleQuote(
         return json(
             {
                 quote: {
-                    depositAddress: response.quote.depositAddress ?? '',
-                    depositMemo: response.quote.depositMemo,
+                    // 1Click's signature does not cover these fields on a dry quote,
+                    // so a dry quote never carries a deposit address.
+                    depositAddress: quoteRequest.dry ? '' : (response.quote.depositAddress ?? ''),
+                    depositMemo: quoteRequest.dry ? undefined : response.quote.depositMemo,
                     amountIn: response.quote.amountIn,
                     amountInFormatted: response.quote.amountInFormatted,
                     minAmountIn: response.quote.minAmountIn,
@@ -168,7 +189,7 @@ export async function handleQuote(
     } catch (error) {
         if (error instanceof OneClickError) {
             return errorResponse(
-                error.status,
+                upstreamErrorStatus(error),
                 {
                     code: 'QUOTE_FAILED',
                     message: 'Quote failed.',
@@ -177,15 +198,7 @@ export async function handleQuote(
                 limitHeaders,
             );
         }
-        console.error('Quote error:', error);
-        return errorResponse(
-            500,
-            {
-                code: 'INTERNAL_ERROR',
-                message: 'Internal server error.',
-            },
-            limitHeaders,
-        );
+        return unexpectedError('Quote', error, limitHeaders);
     }
 }
 
@@ -220,17 +233,13 @@ export async function handleDeposit(request: Request, env: Env): Promise<Respons
         return json({ success: true });
     } catch (error) {
         if (error instanceof OneClickError) {
-            return errorResponse(error.status, {
+            return errorResponse(upstreamErrorStatus(error), {
                 code: 'DEPOSIT_SUBMISSION_FAILED',
                 message: 'Submit deposit failed.',
                 details: error.body,
             });
         }
-        console.error('Deposit error:', error);
-        return errorResponse(500, {
-            code: 'INTERNAL_ERROR',
-            message: 'Internal server error.',
-        });
+        return unexpectedError('Deposit', error);
     }
 }
 
@@ -249,6 +258,13 @@ export async function handleStatus(
 
         const observedAt = new Date();
         const status = response.status;
+        if (typeof status !== 'string') {
+            console.error('1Click returned a status response without a status');
+            return errorResponse(502, {
+                code: 'STATUS_CHECK_FAILED',
+                message: 'Status check failed.',
+            });
+        }
         const isComplete = ['SUCCESS', 'REFUNDED', 'FAILED'].includes(status);
         const isSuccess = status === 'SUCCESS';
 
@@ -268,9 +284,13 @@ export async function handleStatus(
             (tx) => tx.explorerUrl || null,
         );
 
+        // Recorded under the address and memo as 1Click has them, not as the
+        // caller spelled them: 1Click accepts any letter case, and the quote
+        // was saved with 1Click's.
+        const quoted = response.quoteResponse?.quote;
         recordStatus(env, ctx, {
-            depositAddress,
-            depositMemo: memo,
+            depositAddress: quoted?.depositAddress || depositAddress,
+            depositMemo: quoted?.depositAddress ? quoted.depositMemo : memo,
             status,
             correlationId: response.correlationId,
             originTxHashes,
@@ -290,16 +310,12 @@ export async function handleStatus(
         });
     } catch (error) {
         if (error instanceof OneClickError) {
-            return errorResponse(error.status, {
+            return errorResponse(upstreamErrorStatus(error), {
                 code: 'STATUS_CHECK_FAILED',
                 message: 'Status check failed.',
                 details: error.body,
             });
         }
-        console.error('Status error:', error);
-        return errorResponse(500, {
-            code: 'INTERNAL_ERROR',
-            message: 'Internal server error.',
-        });
+        return unexpectedError('Status', error);
     }
 }

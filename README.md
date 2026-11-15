@@ -85,6 +85,9 @@ npm run deploy
 npx wrangler secret put NEAR_API_KEY
 npx wrangler secret put DATABASE_URL    # Neon's pooled connection string
 
+#    On a new database, create the tables first (see Database above):
+npm run migrate
+
 # 4. Check it
 npm run smoke -- https://uniport-backend.<your-subdomain>.workers.dev --live
 ```
@@ -103,6 +106,12 @@ Useful afterwards:
 npx wrangler tail --format json   # live logs, with cpuTime per request
 npx wrangler rollback             # go back to the previous version
 ```
+
+### Free plan limits
+
+The free Workers plan allows 100,000 requests a day for the whole account. Every request counts, including ones answered with 429 and CORS preflights, and once the allowance is used the API returns Cloudflare's error 1027 until midnight UTC. The rate limits here protect 1Click and the database, not this allowance: a client sending about 70 requests a second would use it up in a day. Before real traffic, add a rate limiting rule for the custom domain in the Cloudflare dashboard, or move to the paid plan.
+
+Both rate limiters let requests through if the limiter itself fails, so a limiter outage does not take the API down.
 
 ### CPU time
 

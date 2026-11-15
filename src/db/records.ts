@@ -107,14 +107,17 @@ export function recordQuote(env: Env, ctx: ExecutionContext, quote: QuoteRecord)
 }
 
 /**
- * What this Worker instance last wrote for each deposit. Clients poll the
- * status every few seconds and it rarely changes, so an observation identical
- * to the last one written is skipped without touching the database. It is
- * only a shortcut: another instance, or this one after a restart, goes to the
- * database, where the statements below make repeats harmless.
+ * What this Worker instance wrote for each deposit in the last half minute.
+ * Clients poll the status every few seconds and it rarely changes, so an
+ * observation identical to one just written is skipped without touching the
+ * database. It is only a shortcut and is kept short-lived, because another
+ * instance may have recorded something different in the meantime; after it
+ * expires the write goes to the database, where the statements below make
+ * repeats harmless.
  */
-const lastRecorded = new Map<string, string>();
+const lastRecorded = new Map<string, { fingerprint: string; at: number }>();
 const MAX_REMEMBERED = 500;
+const REMEMBER_MS = 30_000;
 
 /**
  * Records a status seen for a deposit. Clients poll, so an event row is only
@@ -132,18 +135,21 @@ export function recordStatus(env: Env, ctx: ExecutionContext, seen: StatusRecord
 
     const key = `${seen.depositAddress}|${memo}`;
     const fingerprint = `${seen.status}|${originTxHashes}|${destinationTxHashes}`;
-    if (lastRecorded.get(key) === fingerprint) return;
+    const now = Date.now();
+    const last = lastRecorded.get(key);
+    if (last && last.fingerprint === fingerprint && now - last.at < REMEMBER_MS) return;
 
     // Remembered straight away, so polls arriving while this write is still
     // running do not each start their own; forgotten again if it fails.
+    const entry = { fingerprint, at: now };
     lastRecorded.delete(key);
-    lastRecorded.set(key, fingerprint);
+    lastRecorded.set(key, entry);
     for (const oldest of lastRecorded.keys()) {
         if (lastRecorded.size <= MAX_REMEMBERED) break;
         lastRecorded.delete(oldest);
     }
     const forgetIfFailed = (applied: boolean) => {
-        if (!applied && lastRecorded.get(key) === fingerprint) lastRecorded.delete(key);
+        if (!applied && lastRecorded.get(key) === entry) lastRecorded.delete(key);
     };
 
     runInBackground(

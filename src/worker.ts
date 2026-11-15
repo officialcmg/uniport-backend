@@ -10,6 +10,10 @@ export { LiveQuoteLimiter } from './rate-limit.js';
 
 const STATUS_PREFIX = '/api/status/';
 
+// Lets browser code read the rate-limit headers.
+const EXPOSED_HEADERS =
+    'RateLimit-Policy, RateLimit-Limit, RateLimit-Remaining, RateLimit-Reset, Retry-After';
+
 async function route(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const limited = await checkGlobalLimit(request, env);
     if (limited) return limited;
@@ -73,6 +77,7 @@ export default {
         // CORS — open to all origins (SDK can be used from any domain), on every
         // response so a browser can read errors and rate-limit replies too.
         response.headers.set('Access-Control-Allow-Origin', '*');
+        response.headers.set('Access-Control-Expose-Headers', EXPOSED_HEADERS);
         return request.method === 'HEAD' ? new Response(null, response) : response;
     },
 } satisfies ExportedHandler<Env>;
