@@ -22,6 +22,10 @@ const ORIGIN_CHAIN_REFUND = 'ORIGIN_CHAIN' as Enum<'refundType'>;
 const INTENTS_REFUND = 'INTENTS' as Enum<'refundType'>;
 const DESTINATION_CHAIN = 'DESTINATION_CHAIN' as Enum<'recipientType'>;
 
+// How 1Click attributes quotes made with Uniport's API key. It is never taken
+// from the request, so a caller cannot relabel them.
+const REFERRAL = 'uniport';
+
 /** The status to answer with when 1Click fails: its own if it is an error status, else 502. */
 function upstreamErrorStatus(error: OneClickError): number {
     return error.status >= 400 && error.status <= 599 ? error.status : 502;
@@ -89,7 +93,6 @@ export async function handleQuote(
             refundTo,
             recipient,
             deadline,
-            referral,
         } = parsed.value;
 
         const isExactOutput = swapType === 'EXACT_OUTPUT';
@@ -120,7 +123,7 @@ export async function handleQuote(
             recipient,
             recipientType: DESTINATION_CHAIN,
             deadline: deadline ?? new Date(Date.now() + 3600000).toISOString(),
-            referral: referral ?? 'uniport',
+            referral: REFERRAL,
         };
 
         const response = await getQuote(env, quoteRequest);
