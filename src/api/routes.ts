@@ -17,6 +17,7 @@ import { queryRows } from '../db/query.js';
 import { recordQuote, recordStatus } from '../db/records.js';
 import { errorResponse, json, readJsonBody } from '../http.js';
 import { OneClickError, getExecutionStatus, getQuote, submitDepositTx } from '../one-click.js';
+import { classifyQuoteFailure } from './quote-failure.js';
 import { recipientAllowed, resolveAccess } from '../apps.js';
 import { LOCAL_LIVE_QUOTE_LIMIT, checkAppLimit, checkLiveQuoteLimit } from '../rate-limit.js';
 
@@ -237,11 +238,8 @@ export async function handleQuote(
         if (error instanceof OneClickError) {
             return errorResponse(
                 upstreamErrorStatus(error),
-                {
-                    code: 'QUOTE_FAILED',
-                    message: 'Quote failed.',
-                    details: error.body,
-                },
+                // The code says why; `details` keeps 1Click's own answer.
+                { ...classifyQuoteFailure(error.body), details: error.body },
                 limitHeaders,
             );
         }

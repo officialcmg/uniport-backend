@@ -1,6 +1,11 @@
 export type ApiErrorCode =
     | 'VALIDATION_ERROR'
     | 'QUOTE_FAILED'
+    | 'NO_LIQUIDITY'
+    | 'AMOUNT_TOO_LOW'
+    | 'INVALID_RECIPIENT'
+    | 'INVALID_REFUND_ADDRESS'
+    | 'RECIPIENT_NOT_READY'
     | 'QUOTE_UNVERIFIED'
     | 'DEPOSIT_SUBMISSION_FAILED'
     | 'STATUS_CHECK_FAILED'
@@ -14,6 +19,8 @@ export interface ApiErrorResponse {
     code: ApiErrorCode;
     message: string;
     details?: unknown;
+    /** With AMOUNT_TOO_LOW, the least the route will take, when known. */
+    minimum?: { amount?: string; usd?: string };
 }
 
 export interface QuoteRequestBody {
