@@ -71,7 +71,7 @@ To record to a database locally, add `DATABASE_URL` to `.dev.vars`. Use a Neon d
 | `GET` | `/api/status/:depositAddress` | Get swap execution status |
 | `GET` | `/v1/payments/:depositAddress` | Everything a merchant's server needs to confirm a payment |
 
-Requests are limited to 100 per minute per IP across all endpoints; this limit is approximate and counted separately in each Cloudflare location. Live (non-dry) quotes are also limited per IP, counted exactly: 150 per 10 minutes, or 20 for callers with no App ID. A registered app is limited to 600 quote requests per minute across all its users. IPv6 clients are counted per /56.
+Requests are limited to 100 per minute per IP across all endpoints; this limit is approximate and counted separately in each Cloudflare location. Live (non-dry) quotes are also limited per IP, counted exactly: 150 per 10 minutes from a website, or 20 from `localhost`, a server or a script. A registered app is limited to 600 quote requests per minute across all its users; only requests from its allowed websites count toward that. IPv6 clients are counted per /56.
 
 ## App IDs
 
@@ -85,9 +85,11 @@ A developer registers an app in the dashboard and puts its public **App ID** in 
 | Recipient not on the app's recipient list, when it has one | 403 `RECIPIENT_NOT_ALLOWED` |
 | No App ID, from `localhost` or with no `Origin` header (a server or script) | Quote, with the lower live-quote limit |
 | No App ID, from a website | Quote while `APP_ID_ENFORCEMENT` is `off`; 403 `APP_ID_REQUIRED` once it is `on` |
+| App ID that cannot be checked (database down, or no `APP_ID_HMAC_SECRET`) | Quote as an unidentified caller while enforcement is `off`; 503 for websites once it is `on` |
 
 - An app's allowed origins are exact (`https://shop.example.com`) or a subdomain wildcard (`https://*.example.com`). `localhost` is allowed unless the app turns it off.
-- A request with no `Origin` header is not checked against the list: only browsers send `Origin`, and anything else could send whatever it liked.
+- A request with no `Origin` header is not checked against the list: only browsers send `Origin`, and anything else could send whatever it liked. Such a request is recorded against the app with no origin, gets the small live-quote allowance, and does not use the app's rate limit, so nobody can exhaust an app's budget by quoting its public ID from a script.
+- Wildcards must be over a domain the developer owns. Entries such as `https://*.com` or `https://*.vercel.app` are refused when saved.
 - The format is `app_` plus 22 characters, which carry a short signature made with `APP_ID_HMAC_SECRET` (`src/app-id.ts`). The Worker rejects made-up IDs without touching the database. The dashboard creates IDs with the same secret.
 - Apps live in the `apps` and `app_ids` tables. The Worker remembers each lookup for a minute, so a change in the dashboard takes up to a minute to apply. If the database cannot be reached, the request goes through as an unidentified caller, so payments keep working.
 - `status` and `deposit` calls need no App ID; they are keyed by a deposit address that cannot be guessed.
@@ -103,7 +105,9 @@ A merchant must not fulfil an order because the browser said the payment succeed
 - `status` is `SUCCESS`,
 - and that it has not already accepted this deposit address for another order.
 
-No secret is needed. The payment details come live from 1Click; only `appId` and `createdAt` come from Uniport's record of the quote. If that record could not be read, `appIdKnown` is `false` and `appId` is `null`.
+No secret is needed. The payment details come live from 1Click; only `appId` and `createdAt` come from Uniport's record of the quote. `record` says whether there is one: `found`, `missing` (Uniport has no record of this quote, so `appId` is `null`) or `unavailable` (the record could not be read just now; ask again).
+
+What this does not do: tie a payment to a particular order. The check proves a payment of the right amount reached the right address through the merchant's app, and each deposit address should be accepted once. Two orders for the same amount are told apart only by which deposit address each customer's browser reports, so a merchant who needs more than that should give each order its own amount or recipient.
 
 ## Deployment (Cloudflare Workers)
 

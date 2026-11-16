@@ -11,10 +11,11 @@
 import dotenv from 'dotenv';
 import pg from 'pg';
 import { generateAppId } from '../src/app-id.js';
+import { normaliseAllowedOrigin } from '../src/apps.js';
 
 dotenv.config({ path: ['.env.local', '.env'] });
 
-const [name, ...origins] = process.argv.slice(2);
+const [name, ...rawOrigins] = process.argv.slice(2);
 const secret = process.env.APP_ID_HMAC_SECRET;
 const connectionString = process.env.DATABASE_URL_UNPOOLED || process.env.DATABASE_URL;
 
@@ -24,11 +25,12 @@ if (!name || !secret || !connectionString) {
     );
     process.exit(2);
 }
-for (const origin of origins) {
-    if (!/^https?:\/\/[^/]+$/.test(origin)) {
-        console.error(`Not an origin (expected e.g. https://shop.example.com): ${origin}`);
-        process.exit(2);
-    }
+let origins: string[];
+try {
+    origins = rawOrigins.map(normaliseAllowedOrigin);
+} catch (error) {
+    console.error((error as Error).message);
+    process.exit(2);
 }
 
 const client = new pg.Client({ connectionString });

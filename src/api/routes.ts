@@ -67,9 +67,12 @@ export async function handleQuote(
     // Who is asking: a registered app, or nobody in particular.
     const access = await resolveAccess(request, env);
     if (access.kind === 'refused') {
-        return errorResponse(403, { code: access.code, message: access.message });
+        return errorResponse(access.status, { code: access.code, message: access.message });
     }
-    if (access.kind === 'app') {
+    // The app's own budget is only spent by requests from its websites. An App
+    // ID is public, so a script quoting it must not be able to use the budget up.
+    const forApp = access.kind === 'app' && access.fromBrowser;
+    if (access.kind === 'app' && forApp) {
         const limited = await checkAppLimit(access.app.id, env);
         if (limited) return limited;
     }
@@ -82,9 +85,10 @@ export async function handleQuote(
         const limit = await checkLiveQuoteLimit(
             request,
             env,
-            access.kind === 'anonymous' && access.tier === 'local'
-                ? LOCAL_LIVE_QUOTE_LIMIT
-                : undefined,
+            // Servers, scripts and localhost get the small allowance.
+            forApp || (access.kind === 'anonymous' && access.tier === 'unidentified')
+                ? undefined
+                : LOCAL_LIVE_QUOTE_LIMIT,
         );
         if ('limited' in limit) return limit.limited;
         limitHeaders = limit.headers;
@@ -417,23 +421,32 @@ export async function handlePayment(
         const originTxHashes = swapDetails?.originChainTxHashes?.map((tx) => tx.hash);
         const destinationTxHashes = swapDetails?.destinationChainTxHashes?.map((tx) => tx.hash);
 
-        // Which app asked for the quote, from Uniport's record. If the record
-        // cannot be read the answer says so, and a merchant checking appId
-        // will not accept the payment on a guess.
-        let record: { app_public_id: string | null; created_at: string } | undefined;
-        let recordRead = true;
+        // Which app asked for the quote, from Uniport's record. `record` says
+        // whether there is one: a merchant checking appId must be able to tell
+        // "not this app" from "Uniport could not say".
+        let appId: string | null = null;
+        let createdAt: string | null = null;
+        let record: 'found' | 'missing' | 'unavailable' = 'missing';
         try {
             const rows = await queryRows<{ app_public_id: string | null; created_at: string }>(
                 env,
-                `SELECT CASE WHEN app_id IS NULL THEN NULL ELSE app_public_id END AS app_public_id,
-                        created_at
-                 FROM quotes WHERE deposit_address = $1 AND deposit_memo = $2`,
+                // An App ID is only reported if it belongs to a registered app,
+                // whether that was established when the quote was made or since.
+                `SELECT CASE WHEN q.app_id IS NOT NULL
+                               OR EXISTS (SELECT 1 FROM app_ids i WHERE i.id = q.app_public_id)
+                             THEN q.app_public_id END AS app_public_id,
+                        to_char(q.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS created_at
+                 FROM quotes q WHERE q.deposit_address = $1 AND q.deposit_memo = $2`,
                 [canonicalAddress, canonicalMemo ?? ''],
                 1_500,
             );
-            record = rows[0];
+            if (rows[0]) {
+                record = 'found';
+                appId = rows[0].app_public_id;
+                createdAt = rows[0].created_at;
+            }
         } catch (err) {
-            recordRead = false;
+            record = 'unavailable';
             console.error('Could not read the quote record:', (err as Error).message);
         }
 
@@ -454,9 +467,11 @@ export async function handlePayment(
             status,
             isComplete: COMPLETE_STATUSES.includes(status),
             isSuccess: status === 'SUCCESS',
-            appId: record?.app_public_id ?? null,
-            appIdKnown: recordRead,
-            createdAt: record?.created_at ?? null,
+            appId,
+            // 'found', 'missing' (Uniport has no record of this quote) or
+            // 'unavailable' (the record could not be read; ask again).
+            record,
+            createdAt,
             updatedAt: response.updatedAt ?? null,
             swapType: signed.quoteRequest.swapType,
             recipient: signed.quoteRequest.recipient,

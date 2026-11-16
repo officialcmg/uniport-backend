@@ -28,7 +28,7 @@ export function preflight(request: Request): Response {
         'Access-Control-Allow-Origin': '*',
         'Access-Control-Allow-Methods': 'GET,HEAD,PUT,PATCH,POST,DELETE',
         // Without this a browser repeats the preflight every five seconds, and
-        // each one counts as a request.
+        // each one counts toward the plan's daily request allowance.
         'Access-Control-Max-Age': '7200',
         Vary: 'Access-Control-Request-Headers',
     });

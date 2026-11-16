@@ -18,7 +18,7 @@ import { json } from './http.js';
 const TOO_MANY_REQUESTS = { error: 'Too many requests, please try again later.' };
 
 const LIVE_QUOTE_LIMIT = 150;
-/** Live quotes per 10 minutes per IP for callers with no App ID on localhost or a server. */
+/** Live quotes per 10 minutes per IP for localhost, servers and scripts. */
 export const LOCAL_LIVE_QUOTE_LIMIT = 20;
 const LIVE_QUOTE_WINDOW_MS = 10 * 60 * 1000;
 

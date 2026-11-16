@@ -5,6 +5,7 @@ import { test } from 'node:test';
 import {
     decideAccess,
     isLocalOrigin,
+    normaliseAllowedOrigin,
     originAllowed,
     recipientAllowed,
     type App,
@@ -33,13 +34,13 @@ function decide(overrides: Partial<Parameters<typeof decideAccess>[0]>) {
 }
 
 test('a registered app on an allowed origin is let through', () => {
-    assert.deepEqual(decide({}), { kind: 'app', app, publicId: ID });
+    assert.deepEqual(decide({}), { kind: 'app', app, publicId: ID, fromBrowser: true });
     assert.equal(decide({ origin: 'https://pr-12.preview.example.com' }).kind, 'app');
     assert.equal(decide({ origin: 'http://localhost:3000' }).kind, 'app');
 });
 
-test('a registered app with no Origin (a server or script) is let through', () => {
-    assert.equal(decide({ origin: null }).kind, 'app');
+test('a registered app with no Origin (a server or script) is let through, marked as not from a browser', () => {
+    assert.deepEqual(decide({ origin: null }), { kind: 'app', app, publicId: ID, fromBrowser: false });
 });
 
 test('a registered app on another site is refused', () => {
@@ -76,17 +77,54 @@ test('unknown, disabled, suspended and malformed IDs are refused', () => {
     }
 });
 
-test('an ID that cannot be checked is treated as unidentified, not refused', () => {
-    for (const overrides of [
-        { lookup: { state: 'unavailable' } as AppLookup },
-        { tagValid: undefined, lookup: undefined },
-    ]) {
-        assert.deepEqual(decide(overrides), {
+const uncheckable = [
+    { lookup: { state: 'unavailable' } as AppLookup },
+    { tagValid: undefined, lookup: undefined },
+];
+
+test('an ID that cannot be checked is let through unidentified while IDs are not enforced', () => {
+    for (const overrides of uncheckable) {
+        assert.deepEqual(decide({ ...overrides, enforced: false }), {
             kind: 'anonymous',
             tier: 'unidentified',
             claimedId: ID,
         });
     }
+});
+
+test('once enforced, a website with an ID that cannot be checked is asked to retry, not served', () => {
+    for (const overrides of uncheckable) {
+        const result = decide({ ...overrides, enforced: true, origin: 'https://evil.example.org' });
+        assert.equal(result.kind === 'refused' && result.status, 503);
+        // Localhost and servers are never refused for this.
+        assert.equal(decide({ ...overrides, enforced: true, origin: 'http://localhost:3000' }).kind, 'anonymous');
+        assert.equal(decide({ ...overrides, enforced: true, origin: null }).kind, 'anonymous');
+    }
+});
+
+test('normaliseAllowedOrigin accepts sites and owned wildcards, in one form', () => {
+    assert.equal(normaliseAllowedOrigin(' https://Shop.Example.com/ '), 'https://shop.example.com');
+    assert.equal(normaliseAllowedOrigin('https://shop.example.com:443'), 'https://shop.example.com');
+    assert.equal(normaliseAllowedOrigin('http://shop.example.com:8080'), 'http://shop.example.com:8080');
+    assert.equal(normaliseAllowedOrigin('https://*.Example.com'), 'https://*.example.com');
+    assert.equal(normaliseAllowedOrigin('https://*.preview.example.co.uk'), 'https://*.preview.example.co.uk');
+});
+
+test('normaliseAllowedOrigin refuses entries that are too broad or not a site', () => {
+    for (const entry of [
+        '*', 'null', 'https://*', 'https://*.com', 'https://*.co.uk', 'https://*.vercel.app',
+        'https://*.github.io', 'shop.example.com', 'ftp://shop.example.com', 'https://shop.example.com/checkout',
+        'https://shop.example.com?x=1', 'https://user@shop.example.com', 'https://shop.*.example.com',
+        'https://*shop.example.com', 'chrome-extension://abcdef', '',
+    ]) {
+        assert.throws(() => normaliseAllowedOrigin(entry), Error, entry);
+    }
+});
+
+test('originAllowed never matches a non-web origin, whatever the list says', () => {
+    assert.equal(originAllowed('chrome-extension://abcdef', ['null', 'chrome-extension://abcdef']), false);
+    assert.equal(originAllowed('null', ['null']), false);
+    assert.equal(isLocalOrigin('foo://localhost'), false);
 });
 
 test('no ID: localhost and servers get the local allowance', () => {

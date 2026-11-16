@@ -66,6 +66,8 @@ function hmacKey(secret: string): Promise<CryptoKey> {
             ['sign'],
         );
         keys.set(secret, key);
+        // Do not keep a failed import for the life of the instance.
+        key.catch(() => keys.delete(secret));
     }
     return key;
 }
