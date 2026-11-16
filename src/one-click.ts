@@ -40,7 +40,7 @@ async function request<T>(
 
     const headers: Record<string, string> = {
         Accept: 'application/json',
-        Authorization: `Bearer ${env.NEAR_API_KEY}`,
+        'X-API-Key': env.NEAR_API_KEY ?? '',
     };
     if (options.body !== undefined) headers['Content-Type'] = 'application/json';
 
