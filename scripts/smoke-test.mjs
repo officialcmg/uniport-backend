@@ -68,6 +68,15 @@ const get = (path) => call('GET', path);
         r.status === 204 && r.headers.get('access-control-allow-origin') === '*',
         `status ${r.status}`,
     );
+    check('CORS preflight can be cached', r.headers.get('access-control-max-age') === '7200');
+}
+{
+    const r = await post('/api/quote', quoteBody(true), { 'x-uniport-app-id': 'app_0000000000000000000000' });
+    check('a made-up App ID is refused with APP_NOT_FOUND', r.status === 403 && r.json?.code === 'APP_NOT_FOUND', `status ${r.status}`);
+}
+{
+    const r = await post('/api/quote', { ...quoteBody(true), slippageTolerance: 301 });
+    check('slippage above 3% is rejected', r.status === 400 && r.json?.code === 'VALIDATION_ERROR', `status ${r.status}`);
 }
 {
     const r = await post('/api/quote', { dry: true });
@@ -89,7 +98,7 @@ const get = (path) => call('GET', path);
         r.status === 200 && q?.amountOut && q?.depositAddress === '' && typeof r.json?.correlationId === 'string',
         `status ${r.status}, ${r.ms} ms`,
     );
-    check('dry quote is not counted by the live-quote limit', r.headers.get('ratelimit-policy') !== '150;w=600');
+    check('dry quote is not counted by the live-quote limit', r.headers.get('ratelimit-policy') === null);
 }
 {
     const r = await post('/api/quote', { ...quoteBody(true), recipient: 'not-an-address' });
@@ -125,13 +134,23 @@ if (live) {
     const address = r.json?.quote?.depositAddress;
     check('live quote returns a deposit address', r.status === 200 && !!address, `status ${r.status}, ${r.ms} ms`);
     check(
-        'live quote carries the 150-per-10-minutes limit headers',
-        r.headers.get('ratelimit-policy') === '150;w=600' && r.headers.get('ratelimit-remaining') !== null,
+        'live quote carries its rate-limit headers',
+        /^\d+;w=600$/.test(r.headers.get('ratelimit-policy') ?? '') && r.headers.get('ratelimit-remaining') !== null,
         `policy ${r.headers.get('ratelimit-policy')}, remaining ${r.headers.get('ratelimit-remaining')}`,
     );
     if (address) {
         const s = await get(`/api/status/${address}`);
         check('status of the new quote is PENDING_DEPOSIT', s.status === 200 && s.json?.status === 'PENDING_DEPOSIT', `status ${s.status}`);
+        const p = await get(`/v1/payments/${address}`);
+        check(
+            'payment check returns the payment as 1Click signed it',
+            p.status === 200 &&
+                p.json?.depositAddress === address &&
+                p.json?.recipient === ADDRESS &&
+                p.json?.status === 'PENDING_DEPOSIT' &&
+                typeof p.json?.signedQuote?.signature === 'string',
+            `status ${p.status}`,
+        );
         console.log(`      deposit address ${address}, correlation ID ${r.json.correlationId}`);
     }
 }

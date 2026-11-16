@@ -4,6 +4,10 @@ export type ApiErrorCode =
     | 'QUOTE_UNVERIFIED'
     | 'DEPOSIT_SUBMISSION_FAILED'
     | 'STATUS_CHECK_FAILED'
+    | 'APP_ID_REQUIRED'
+    | 'APP_NOT_FOUND'
+    | 'ORIGIN_NOT_ALLOWED'
+    | 'RECIPIENT_NOT_ALLOWED'
     | 'INTERNAL_ERROR';
 
 export interface ApiErrorResponse {

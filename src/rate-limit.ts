@@ -18,6 +18,8 @@ import { json } from './http.js';
 const TOO_MANY_REQUESTS = { error: 'Too many requests, please try again later.' };
 
 const LIVE_QUOTE_LIMIT = 150;
+/** Live quotes per 10 minutes per IP for callers with no App ID on localhost or a server. */
+export const LOCAL_LIVE_QUOTE_LIMIT = 20;
 const LIVE_QUOTE_WINDOW_MS = 10 * 60 * 1000;
 
 /**
@@ -59,6 +61,17 @@ export async function checkGlobalLimit(request: Request, env: Env): Promise<Resp
     return undefined;
 }
 
+/** Counts one quote request for a registered app. Returns a 429 response if it is over its limit. */
+export async function checkAppLimit(appId: string, env: Env): Promise<Response | undefined> {
+    try {
+        const { success } = await env.APP_LIMITER.limit({ key: `app:${appId}` });
+        if (!success) return json(TOO_MANY_REQUESTS, 429, { 'Retry-After': '60' });
+    } catch (err) {
+        console.error('App rate limiter unavailable:', (err as Error).message);
+    }
+    return undefined;
+}
+
 /**
  * Counts one live quote for the caller. Returns either a 429 response, or the
  * RateLimit headers to put on whatever response follows.
@@ -66,17 +79,15 @@ export async function checkGlobalLimit(request: Request, env: Env): Promise<Resp
 export async function checkLiveQuoteLimit(
     request: Request,
     env: Env,
+    limit: number = LIVE_QUOTE_LIMIT,
 ): Promise<{ limited: Response } | { headers: Record<string, string> }> {
     try {
         const id = env.LIVE_QUOTE_LIMITER.idFromName(rateLimitKey(request));
-        const hit = await env.LIVE_QUOTE_LIMITER.get(id).hit(
-            LIVE_QUOTE_LIMIT,
-            LIVE_QUOTE_WINDOW_MS,
-        );
+        const hit = await env.LIVE_QUOTE_LIMITER.get(id).hit(limit, LIVE_QUOTE_WINDOW_MS);
         const resetSeconds = String(Math.ceil(hit.resetMs / 1000));
         const headers = {
-            'RateLimit-Policy': `${LIVE_QUOTE_LIMIT};w=${LIVE_QUOTE_WINDOW_MS / 1000}`,
-            'RateLimit-Limit': String(LIVE_QUOTE_LIMIT),
+            'RateLimit-Policy': `${limit};w=${LIVE_QUOTE_WINDOW_MS / 1000}`,
+            'RateLimit-Limit': String(limit),
             'RateLimit-Remaining': String(hit.remaining),
             'RateLimit-Reset': resetSeconds,
         };

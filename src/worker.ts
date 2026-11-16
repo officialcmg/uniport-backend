@@ -2,13 +2,32 @@
  * Cloudflare Workers entry: CORS, rate limiting and routing.
  */
 
-import { handleDeposit, handleQuote, handleStatus } from './api/routes.js';
+import { handleDeposit, handlePayment, handleQuote, handleStatus } from './api/routes.js';
 import { errorResponse, json, preflight } from './http.js';
 import { checkGlobalLimit } from './rate-limit.js';
 
 export { LiveQuoteLimiter } from './rate-limit.js';
 
 const STATUS_PREFIX = '/api/status/';
+const PAYMENT_PREFIX = '/v1/payments/';
+
+/**
+ * Reads the deposit address from the end of a path such as
+ * /api/status/<address>. Returns undefined if the path has no single segment
+ * there, or an error response if it is not valid percent-encoding.
+ */
+function depositAddressFrom(pathname: string, prefix: string): string | Response | undefined {
+    const encoded = pathname.slice(prefix.length);
+    if (!encoded || encoded.includes('/')) return undefined;
+    try {
+        return decodeURIComponent(encoded);
+    } catch {
+        return errorResponse(400, {
+            code: 'VALIDATION_ERROR',
+            message: 'Invalid depositAddress parameter.',
+        });
+    }
+}
 
 // Lets browser code read the rate-limit headers.
 const EXPOSED_HEADERS =
@@ -29,7 +48,7 @@ async function route(request: Request, env: Env, ctx: ExecutionContext): Promise
         });
     }
 
-    if (pathname.startsWith('/api/')) {
+    if (pathname.startsWith('/api/') || pathname.startsWith('/v1/')) {
         if (!env.NEAR_API_KEY) {
             console.error('NEAR_API_KEY is not set');
             return errorResponse(503, {
@@ -43,20 +62,16 @@ async function route(request: Request, env: Env, ctx: ExecutionContext): Promise
         if (method === 'POST' && pathname === '/api/deposit') {
             return handleDeposit(request, env);
         }
+        const memo = searchParams.get('memo') ?? undefined;
         if (method === 'GET' && pathname.startsWith(STATUS_PREFIX)) {
-            const encoded = pathname.slice(STATUS_PREFIX.length);
-            if (encoded && !encoded.includes('/')) {
-                let depositAddress: string;
-                try {
-                    depositAddress = decodeURIComponent(encoded);
-                } catch {
-                    return errorResponse(400, {
-                        code: 'VALIDATION_ERROR',
-                        message: 'Invalid depositAddress parameter.',
-                    });
-                }
-                return handleStatus(depositAddress, searchParams.get('memo') ?? undefined, env, ctx);
-            }
+            const depositAddress = depositAddressFrom(pathname, STATUS_PREFIX);
+            if (depositAddress instanceof Response) return depositAddress;
+            if (depositAddress) return handleStatus(depositAddress, memo, env, ctx);
+        }
+        if (method === 'GET' && pathname.startsWith(PAYMENT_PREFIX)) {
+            const depositAddress = depositAddressFrom(pathname, PAYMENT_PREFIX);
+            if (depositAddress instanceof Response) return depositAddress;
+            if (depositAddress) return handlePayment(depositAddress, memo, env, ctx);
         }
     }
 
