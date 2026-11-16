@@ -87,3 +87,16 @@ test('stableStringify matches json-stable-stringify', () => {
         assert.equal(stableStringify(sample), stableStringifyReference(sample));
     }
 });
+
+test('Polygon and Bitcoin quotes skip the signature check; others do not', async () => {
+    const { signatureCheckable } = await import('../src/api/quote-verification.js');
+    const base = 'nep141:base-0x833589fcd6edb6e08f4c7c32d4f71b54bda02913.omft.near';
+    const optimism = 'nep245:v2_1.omni.hot.tg:10_A2ewyUyDp6qsue1jqZsGypkCxRJ';
+    const polygon = 'nep245:v2_1.omni.hot.tg:137_qiStmoQJDQPTebaPjgx5VBxZv6L';
+    assert.equal(signatureCheckable({ originAsset: base, destinationAsset: optimism }), true);
+    assert.equal(signatureCheckable({ originAsset: polygon, destinationAsset: base }), false);
+    assert.equal(signatureCheckable({ originAsset: base, destinationAsset: polygon }), false);
+    assert.equal(signatureCheckable({ originAsset: 'nep141:btc.omft.near', destinationAsset: base }), false);
+    // Chain 1370 is not Polygon: the prefix ends with an underscore.
+    assert.equal(signatureCheckable({ originAsset: 'nep245:v2_1.omni.hot.tg:1370_abc', destinationAsset: base }), true);
+});
