@@ -11,7 +11,7 @@
         "ONECLICK_BASE_URL": "https://1click.chaindefuser.com",
         // "on" refuses quotes from websites that send no App ID. Requests from
         // localhost and from servers are always allowed without one.
-        "APP_ID_ENFORCEMENT": "off",
+        "APP_ID_ENFORCEMENT": "on",
         // The address uniport.eth resolves to. NEAR Intents does not resolve ENS
         // names, so the address itself is used, in lowercase.
         "UNIPORT_INTENTS_REFUND_ACCOUNT": "0x2f43a54f931b95053c3dda5f4637065aa0c3c494"

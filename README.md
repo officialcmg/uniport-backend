@@ -29,7 +29,7 @@ cp .dev.vars.example .dev.vars
 | `UNIPORT_INTENTS_REFUND_ACCOUNT` | `vars` in `wrangler.jsonc` | For `EXACT_OUTPUT` | Uniport-controlled NEAR Intents account that receives rounded surplus and failed-swap refunds: a NEAR account or an EVM address. ENS names are not resolved; 1Click accepts any well-formed name, including ones nobody controls |
 | `ONECLICK_BASE_URL` | `vars` in `wrangler.jsonc` | No | 1Click API base URL (default `https://1click.chaindefuser.com`) |
 | `APP_ID_HMAC_SECRET` | Secret | For App IDs | Signs the short tag inside App IDs. The dashboard must hold the same value. Without it App IDs cannot be checked and callers are treated as unidentified |
-| `APP_ID_ENFORCEMENT` | `vars` in `wrangler.jsonc` | No | `on` refuses quotes from websites that send no App ID (default `off`) |
+| `APP_ID_ENFORCEMENT` | `vars` in `wrangler.jsonc` | No | `on` refuses quotes from websites that send no App ID (now `on`; `off` if unset) |
 | `VERIFY_QUOTE_SIGNATURES` | `vars` | No | Verify 1Click's signature on every quote, and that it was signed for this request, before returning it (default `true`). Set to `false` only if 1Click changes its signing and quotes start failing with `QUOTE_UNVERIFIED` |
 | `DATABASE_URL` | Secret | No | Neon connection string (pooled). When set, live quotes and payment status changes are recorded. Without it, or if the database is unreachable, the API works as normal and nothing is recorded |
 | `DATABASE_URL_UNPOOLED` | `.env.local`, for `npm run migrate` only | For migrations | Direct (non-pooled) Neon connection string |
