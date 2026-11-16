@@ -7,6 +7,7 @@
         "dev": "wrangler dev",
         "build": "tsc && wrangler deploy --dry-run --outdir dist",
         "deploy": "wrangler deploy",
+        "check:polygon": "tsx scripts/check-polygon-signature.ts",
         "smoke": "node scripts/smoke-test.mjs",
         "migrate": "tsx src/db/migrate.ts",
         "test": "tsx --test test/*.test.ts"

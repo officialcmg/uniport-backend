@@ -72,6 +72,20 @@ const BOUND_FIELDS = [
 // skip the signature check but must still match our request.
 const UNVERIFIABLE_SIGNATURE_ASSETS = new Set(['nep141:btc.omft.near']);
 
+// TEMPORARY. Every quote to or from Polygon fails 1Click's signature check,
+// for any token (checked 16 Nov 2026: USDC, USDT and POL, both directions),
+// while the quotes themselves look normal. Until 1Click fixes it, Polygon
+// quotes skip the check too. Remove this once a Polygon quote verifies again:
+// `npm run check:polygon` says whether it does.
+const UNVERIFIABLE_SIGNATURE_PREFIXES = ['nep245:v2_1.omni.hot.tg:137_'];
+
+function signatureUnverifiable(asset: string): boolean {
+    return (
+        UNVERIFIABLE_SIGNATURE_ASSETS.has(asset) ||
+        UNVERIFIABLE_SIGNATURE_PREFIXES.some((prefix) => asset.startsWith(prefix))
+    );
+}
+
 /** Set VERIFY_QUOTE_SIGNATURES=false to switch verification off (e.g. if 1Click changes its signing). */
 export function isQuoteVerificationEnabled(env: Env): boolean {
     return env.VERIFY_QUOTE_SIGNATURES?.trim().toLowerCase() !== 'false';
@@ -80,8 +94,8 @@ export function isQuoteVerificationEnabled(env: Env): boolean {
 /** Whether 1Click's signature on a quote should be checked: it cannot be for a few assets. */
 export function signatureCheckable(request: Pick<QuoteRequest, 'originAsset' | 'destinationAsset'>): boolean {
     return (
-        !UNVERIFIABLE_SIGNATURE_ASSETS.has(request.originAsset) &&
-        !UNVERIFIABLE_SIGNATURE_ASSETS.has(request.destinationAsset)
+        !signatureUnverifiable(request.originAsset) &&
+        !signatureUnverifiable(request.destinationAsset)
     );
 }
 
