@@ -7,11 +7,18 @@
 
 import type { QuoteRequest } from '@defuse-protocol/one-click-sdk-typescript';
 import { parseDepositRequestBody, parseQuoteRequestBody } from './contract.js';
-import { findQuoteProblem, isQuoteVerificationEnabled } from './quote-verification.js';
+import {
+    findQuoteProblem,
+    isQuoteVerificationEnabled,
+    signatureCheckable,
+    signatureVerifies,
+} from './quote-verification.js';
+import { queryRows } from '../db/query.js';
 import { recordQuote, recordStatus } from '../db/records.js';
 import { errorResponse, json, readJsonBody } from '../http.js';
 import { OneClickError, getExecutionStatus, getQuote, submitDepositTx } from '../one-click.js';
-import { checkLiveQuoteLimit } from '../rate-limit.js';
+import { recipientAllowed, resolveAccess } from '../apps.js';
+import { LOCAL_LIVE_QUOTE_LIMIT, checkAppLimit, checkLiveQuoteLimit } from '../rate-limit.js';
 
 // The SDK declares these request fields as enums. Its runtime code is not
 // loaded (see one-click.ts), so the values are written out and typed here.
@@ -21,6 +28,10 @@ const ORIGIN_CHAIN_DEPOSIT = 'ORIGIN_CHAIN' as Enum<'depositType'>;
 const ORIGIN_CHAIN_REFUND = 'ORIGIN_CHAIN' as Enum<'refundType'>;
 const INTENTS_REFUND = 'INTENTS' as Enum<'refundType'>;
 const DESTINATION_CHAIN = 'DESTINATION_CHAIN' as Enum<'recipientType'>;
+
+// How 1Click attributes quotes made with Uniport's API key. It is never taken
+// from the request, so a caller cannot relabel them.
+const REFERRAL = 'uniport';
 
 /** The status to answer with when 1Click fails: its own if it is an error status, else 502. */
 function upstreamErrorStatus(error: OneClickError): number {
@@ -53,12 +64,32 @@ export async function handleQuote(
     const read = await readJsonBody(request);
     if ('error' in read) return read.error;
 
+    // Who is asking: a registered app, or nobody in particular.
+    const access = await resolveAccess(request, env);
+    if (access.kind === 'refused') {
+        return errorResponse(access.status, { code: access.code, message: access.message });
+    }
+    // The app's own budget is only spent by requests from its websites. An App
+    // ID is public, so a script quoting it must not be able to use the budget up.
+    const forApp = access.kind === 'app' && access.fromBrowser;
+    if (access.kind === 'app' && forApp) {
+        const limited = await checkAppLimit(access.app.id, env);
+        if (limited) return limited;
+    }
+
     // Live quotes create a deposit address at 1Click and a database row, so they
     // get a tighter limit than the global one. Dry quotes are only price checks
     // and are not counted.
     let limitHeaders: Record<string, string> = {};
     if ((read.body as { dry?: unknown }).dry !== true) {
-        const limit = await checkLiveQuoteLimit(request, env);
+        const limit = await checkLiveQuoteLimit(
+            request,
+            env,
+            // Servers, scripts and localhost get the small allowance.
+            forApp || (access.kind === 'anonymous' && access.tier === 'unidentified')
+                ? undefined
+                : LOCAL_LIVE_QUOTE_LIMIT,
+        );
         if ('limited' in limit) return limit.limited;
         limitHeaders = limit.headers;
     }
@@ -89,8 +120,21 @@ export async function handleQuote(
             refundTo,
             recipient,
             deadline,
-            referral,
         } = parsed.value;
+
+        if (
+            access.kind === 'app' &&
+            !recipientAllowed(recipient, access.app.recipientAllowlist)
+        ) {
+            return errorResponse(
+                403,
+                {
+                    code: 'RECIPIENT_NOT_ALLOWED',
+                    message: 'This app only accepts payments to the addresses on its recipient list.',
+                },
+                limitHeaders,
+            );
+        }
 
         const isExactOutput = swapType === 'EXACT_OUTPUT';
         const intentsRefundAccount = env.UNIPORT_INTENTS_REFUND_ACCOUNT?.trim().toLowerCase();
@@ -120,7 +164,7 @@ export async function handleQuote(
             recipient,
             recipientType: DESTINATION_CHAIN,
             deadline: deadline ?? new Date(Date.now() + 3600000).toISOString(),
-            referral: referral ?? 'uniport',
+            referral: REFERRAL,
         };
 
         const response = await getQuote(env, quoteRequest);
@@ -161,6 +205,9 @@ export async function handleQuote(
                 refundTo: quoteRequest.refundTo,
                 referral: quoteRequest.referral,
                 deadline: response.quote.deadline,
+                appId: access.kind === 'app' ? access.app.id : undefined,
+                appPublicId: access.kind === 'app' ? access.publicId : access.claimedId,
+                origin: request.headers.get('origin') ?? undefined,
             });
         }
 
@@ -317,5 +364,144 @@ export async function handleStatus(
             });
         }
         return unexpectedError('Status', error);
+    }
+}
+
+// ============================================================================
+// GET /v1/payments/:depositAddress
+// ============================================================================
+
+const COMPLETE_STATUSES = ['SUCCESS', 'REFUNDED', 'FAILED'];
+
+/**
+ * What a merchant's server needs to confirm a payment before fulfilling an
+ * order: it should check `appId`, `recipient`, `destinationAsset`, the amount
+ * and `status` itself, and never rely on the browser's onSuccess callback.
+ *
+ * Everything about the payment comes live from 1Click, including the quote
+ * 1Click signed. Only `appId` and `createdAt` come from Uniport's own record of
+ * the quote. No secret is needed: a deposit address is not guessable, and the
+ * rest is visible on chain.
+ */
+export async function handlePayment(
+    depositAddress: string,
+    memo: string | undefined,
+    env: Env,
+    ctx: ExecutionContext,
+): Promise<Response> {
+    try {
+        const response = await getExecutionStatus(env, depositAddress, memo);
+        const observedAt = new Date();
+        const signed = response.quoteResponse;
+        const status = response.status;
+        if (typeof status !== 'string' || !signed?.quote || !signed.quoteRequest) {
+            console.error('1Click returned an incomplete status response');
+            return errorResponse(502, {
+                code: 'STATUS_CHECK_FAILED',
+                message: 'Status check failed.',
+            });
+        }
+
+        // The quote this payment was made against must be one 1Click signed.
+        const verified =
+            !isQuoteVerificationEnabled(env) ||
+            !signatureCheckable(signed.quoteRequest) ||
+            (await signatureVerifies(signed));
+        if (!verified) {
+            console.error(`Payment ${depositAddress} has a quote that does not verify`);
+            return errorResponse(502, {
+                code: 'QUOTE_UNVERIFIED',
+                message: 'Could not verify the payment. Please try again.',
+            });
+        }
+
+        const canonicalAddress = signed.quote.depositAddress || depositAddress;
+        const canonicalMemo = signed.quote.depositMemo ?? memo;
+        const swapDetails = response.swapDetails;
+        const originTxHashes = swapDetails?.originChainTxHashes?.map((tx) => tx.hash);
+        const destinationTxHashes = swapDetails?.destinationChainTxHashes?.map((tx) => tx.hash);
+
+        // Which app asked for the quote, from Uniport's record. `record` says
+        // whether there is one: a merchant checking appId must be able to tell
+        // "not this app" from "Uniport could not say".
+        let appId: string | null = null;
+        let createdAt: string | null = null;
+        let record: 'found' | 'missing' | 'unavailable' = 'missing';
+        try {
+            const rows = await queryRows<{ app_public_id: string | null; created_at: string }>(
+                env,
+                // An App ID is only reported if it belongs to a registered app,
+                // whether that was established when the quote was made or since.
+                `SELECT CASE WHEN q.app_id IS NOT NULL
+                               OR EXISTS (SELECT 1 FROM app_ids i WHERE i.id = q.app_public_id)
+                             THEN q.app_public_id END AS app_public_id,
+                        to_char(q.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS created_at
+                 FROM quotes q WHERE q.deposit_address = $1 AND q.deposit_memo = $2`,
+                [canonicalAddress, canonicalMemo ?? ''],
+                1_500,
+            );
+            if (rows[0]) {
+                record = 'found';
+                appId = rows[0].app_public_id;
+                createdAt = rows[0].created_at;
+            }
+        } catch (err) {
+            record = 'unavailable';
+            console.error('Could not read the quote record:', (err as Error).message);
+        }
+
+        // A server asking about a payment is as good a status poll as any.
+        recordStatus(env, ctx, {
+            depositAddress: canonicalAddress,
+            depositMemo: canonicalMemo,
+            status,
+            correlationId: response.correlationId,
+            originTxHashes,
+            destinationTxHashes,
+            observedAt,
+        });
+
+        return json({
+            depositAddress: canonicalAddress,
+            depositMemo: canonicalMemo ?? null,
+            status,
+            isComplete: COMPLETE_STATUSES.includes(status),
+            isSuccess: status === 'SUCCESS',
+            appId,
+            // 'found', 'missing' (Uniport has no record of this quote) or
+            // 'unavailable' (the record could not be read; ask again).
+            record,
+            createdAt,
+            updatedAt: response.updatedAt ?? null,
+            swapType: signed.quoteRequest.swapType,
+            recipient: signed.quoteRequest.recipient,
+            originAsset: signed.quoteRequest.originAsset,
+            destinationAsset: signed.quoteRequest.destinationAsset,
+            quotedAmountOut: signed.quote.amountOut,
+            minAmountOut: signed.quote.minAmountOut,
+            // What was actually delivered; null until the swap completes.
+            amountOut: swapDetails?.amountOut ?? null,
+            amountOutUsd: swapDetails?.amountOutUsd ?? null,
+            refundedAmount: swapDetails?.refundedAmount ?? null,
+            originTxHashes: originTxHashes ?? [],
+            destinationTxHashes: destinationTxHashes ?? [],
+            correlationId: response.correlationId,
+            // The quote as 1Click signed it, for anyone who wants to check the signature themselves.
+            signedQuote: {
+                quoteRequest: signed.quoteRequest,
+                quote: signed.quote,
+                signature: signed.signature,
+                timestamp: signed.timestamp,
+            },
+        });
+    } catch (error) {
+        if (error instanceof OneClickError) {
+            return errorResponse(upstreamErrorStatus(error), {
+                code: 'STATUS_CHECK_FAILED',
+                message: 'Status check failed.',
+                details: error.body,
+            });
+        }
+        return unexpectedError('Payment', error);
     }
 }

@@ -8,3 +8,6 @@ NEAR_API_KEY=your-near-api-key-here
 # Optional: Neon Postgres connection string (pooled). When set, live quotes and
 # payment status changes are recorded. Use a development branch, not production.
 # DATABASE_URL=postgresql://user:password@your-endpoint-pooler.region.aws.neon.tech/neondb?sslmode=require
+
+# Needed for App IDs: any long random string. The dashboard must use the same one.
+# APP_ID_HMAC_SECRET=

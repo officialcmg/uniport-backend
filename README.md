@@ -28,6 +28,8 @@ cp .dev.vars.example .dev.vars
 | `NEAR_API_KEY` | Secret | **Yes** | Your NEAR Intents API key. Get one at [partners.near-intents.org](https://partners.near-intents.org/). Without it every `/api` call returns 503 |
 | `UNIPORT_INTENTS_REFUND_ACCOUNT` | `vars` in `wrangler.jsonc` | For `EXACT_OUTPUT` | Uniport-controlled NEAR Intents account that receives rounded surplus and failed-swap refunds: a NEAR account or an EVM address. ENS names are not resolved; 1Click accepts any well-formed name, including ones nobody controls |
 | `ONECLICK_BASE_URL` | `vars` in `wrangler.jsonc` | No | 1Click API base URL (default `https://1click.chaindefuser.com`) |
+| `APP_ID_HMAC_SECRET` | Secret | For App IDs | Signs the short tag inside App IDs. The dashboard must hold the same value. Without it App IDs cannot be checked and callers are treated as unidentified |
+| `APP_ID_ENFORCEMENT` | `vars` in `wrangler.jsonc` | No | `on` refuses quotes from websites that send no App ID (default `off`) |
 | `VERIFY_QUOTE_SIGNATURES` | `vars` | No | Verify 1Click's signature on every quote, and that it was signed for this request, before returning it (default `true`). Set to `false` only if 1Click changes its signing and quotes start failing with `QUOTE_UNVERIFIED` |
 | `DATABASE_URL` | Secret | No | Neon connection string (pooled). When set, live quotes and payment status changes are recorded. Without it, or if the database is unreachable, the API works as normal and nothing is recorded |
 | `DATABASE_URL_UNPOOLED` | `.env.local`, for `npm run migrate` only | For migrations | Direct (non-pooled) Neon connection string |
@@ -67,8 +69,45 @@ To record to a database locally, add `DATABASE_URL` to `.dev.vars`. Use a Neon d
 | `POST` | `/api/quote` | Get a cross-chain swap quote |
 | `POST` | `/api/deposit` | Submit a deposit transaction hash |
 | `GET` | `/api/status/:depositAddress` | Get swap execution status |
+| `GET` | `/v1/payments/:depositAddress` | Everything a merchant's server needs to confirm a payment |
 
-Requests are limited to 100 per minute per IP across all endpoints; this limit is approximate and counted separately in each Cloudflare location. Live (non-dry) quotes are also limited to 150 per 10 minutes per IP, counted exactly. IPv6 clients are counted per /56.
+Requests are limited to 100 per minute per IP across all endpoints; this limit is approximate and counted separately in each Cloudflare location. Live (non-dry) quotes are also limited per IP, counted exactly: 150 per 10 minutes from a website, or 20 from `localhost`, a server or a script. A registered app is limited to 600 quote requests per minute across all its users; only requests from its allowed websites count toward that. IPv6 clients are counted per /56.
+
+## App IDs
+
+A developer registers an app in the dashboard and puts its public **App ID** in their code. The SDK sends it as the `X-Uniport-App-Id` header on `POST /api/quote`, and the quote is recorded against the app. The ID is public: what it protects is which websites may use it, not access to the API.
+
+| Request | Result |
+|---------|--------|
+| App ID, from an origin the app allows | Quote |
+| App ID, from another website | 403 `ORIGIN_NOT_ALLOWED` |
+| Unknown, disabled or malformed App ID | 403 `APP_NOT_FOUND` |
+| Recipient not on the app's recipient list, when it has one | 403 `RECIPIENT_NOT_ALLOWED` |
+| No App ID, from `localhost` or with no `Origin` header (a server or script) | Quote, with the lower live-quote limit |
+| No App ID, from a website | Quote while `APP_ID_ENFORCEMENT` is `off`; 403 `APP_ID_REQUIRED` once it is `on` |
+| App ID that cannot be checked (database down, or no `APP_ID_HMAC_SECRET`) | Quote as an unidentified caller while enforcement is `off`; 503 for websites once it is `on` |
+
+- An app's allowed origins are exact (`https://shop.example.com`) or a subdomain wildcard (`https://*.example.com`). `localhost` is allowed unless the app turns it off.
+- A request with no `Origin` header is not checked against the list: only browsers send `Origin`, and anything else could send whatever it liked. Such a request is recorded against the app with no origin, gets the small live-quote allowance, and does not use the app's rate limit, so nobody can exhaust an app's budget by quoting its public ID from a script.
+- Wildcards must be over a domain the developer owns. Entries such as `https://*.com` or `https://*.vercel.app` are refused when saved.
+- The format is `app_` plus 22 characters, which carry a short signature made with `APP_ID_HMAC_SECRET` (`src/app-id.ts`). The Worker rejects made-up IDs without touching the database. The dashboard creates IDs with the same secret.
+- Apps live in the `apps` and `app_ids` tables. The Worker remembers each lookup for a minute, so a change in the dashboard takes up to a minute to apply. If the database cannot be reached, the request goes through as an unidentified caller, so payments keep working.
+- `status` and `deposit` calls need no App ID; they are keyed by a deposit address that cannot be guessed.
+- `npx tsx scripts/create-app.ts "<name>" <origin>...` creates an app directly in the database, for apps Uniport runs itself.
+
+## Confirming a payment on a server
+
+A merchant must not fulfil an order because the browser said the payment succeeded. `GET /v1/payments/:depositAddress` (add `?memo=` for chains that use one) returns the payment as 1Click reports it, with the quote 1Click signed. The merchant's server should check:
+
+- `appId` is its own App ID,
+- `recipient` and `destinationAsset` are what it expected,
+- `amountOut` is at least the order amount,
+- `status` is `SUCCESS`,
+- and that it has not already accepted this deposit address for another order.
+
+No secret is needed. The payment details come live from 1Click; only `appId` and `createdAt` come from Uniport's record of the quote. `record` says whether there is one: `found`, `missing` (Uniport has no record of this quote, so `appId` is `null`) or `unavailable` (the record could not be read just now; ask again).
+
+What this does not do: tie a payment to a particular order. The check proves a payment of the right amount reached the right address through the merchant's app, and each deposit address should be accepted once. Two orders for the same amount are told apart only by which deposit address each customer's browser reports, so a merchant who needs more than that should give each order its own amount or recipient.
 
 ## Deployment (Cloudflare Workers)
 
@@ -84,6 +123,7 @@ npm run deploy
 # 3. Set the secrets. Until NEAR_API_KEY is set, /api calls return 503.
 npx wrangler secret put NEAR_API_KEY
 npx wrangler secret put DATABASE_URL    # Neon's pooled connection string
+npx wrangler secret put APP_ID_HMAC_SECRET   # any long random string; the dashboard needs the same one
 
 #    On a new database, create the tables first (see Database above):
 npm run migrate

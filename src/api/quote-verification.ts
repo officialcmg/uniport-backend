@@ -77,15 +77,20 @@ export function isQuoteVerificationEnabled(env: Env): boolean {
     return env.VERIFY_QUOTE_SIGNATURES?.trim().toLowerCase() !== 'false';
 }
 
+/** Whether 1Click's signature on a quote should be checked: it cannot be for a few assets. */
+export function signatureCheckable(request: Pick<QuoteRequest, 'originAsset' | 'destinationAsset'>): boolean {
+    return (
+        !UNVERIFIABLE_SIGNATURE_ASSETS.has(request.originAsset) &&
+        !UNVERIFIABLE_SIGNATURE_ASSETS.has(request.destinationAsset)
+    );
+}
+
 /** Returns why the quote can't be trusted, or null if it can. */
 export async function findQuoteProblem(
     response: QuoteResponse,
     request: QuoteRequest
 ): Promise<string | null> {
-    const signatureExempt =
-        UNVERIFIABLE_SIGNATURE_ASSETS.has(request.originAsset) ||
-        UNVERIFIABLE_SIGNATURE_ASSETS.has(request.destinationAsset);
-    if (!signatureExempt && !(await signatureVerifies(response))) {
+    if (signatureCheckable(request) && !(await signatureVerifies(response))) {
         return 'signature does not verify';
     }
     const signed = response.quoteRequest;

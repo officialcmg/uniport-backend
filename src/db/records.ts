@@ -28,6 +28,12 @@ export interface QuoteRecord {
     refundTo: string;
     referral?: string;
     deadline?: string;
+    /** The registered app the quote was made for (apps.id), if any. */
+    appId?: string;
+    /** The App ID the caller sent, kept even when it could not be checked. */
+    appPublicId?: string;
+    /** The website the quote was requested from. */
+    origin?: string;
 }
 
 export interface StatusRecord {
@@ -63,8 +69,10 @@ export function recordQuote(env: Env, ctx: ExecutionContext, quote: QuoteRecord)
             text: `INSERT INTO quotes (
                 correlation_id, deposit_address, deposit_memo, swap_type,
                 origin_asset, destination_asset, amount, amount_in, amount_out,
-                min_amount_out, amount_out_usd, recipient, refund_to, referral, deadline
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+                min_amount_out, amount_out_usd, recipient, refund_to, referral, deadline,
+                app_id, app_public_id, origin
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
+                      $16::uuid, $17, $18)
             ON CONFLICT (deposit_address, deposit_memo) DO NOTHING`,
             values: [
                 quote.correlationId ?? null,
@@ -82,6 +90,9 @@ export function recordQuote(env: Env, ctx: ExecutionContext, quote: QuoteRecord)
                 quote.refundTo,
                 quote.referral ?? null,
                 quote.deadline ?? null,
+                quote.appId ?? null,
+                quote.appPublicId?.slice(0, 64) ?? null,
+                quote.origin?.slice(0, 255) ?? null,
             ],
         },
         {

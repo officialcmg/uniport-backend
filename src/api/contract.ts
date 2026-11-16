@@ -4,6 +4,10 @@ export type ApiErrorCode =
     | 'QUOTE_UNVERIFIED'
     | 'DEPOSIT_SUBMISSION_FAILED'
     | 'STATUS_CHECK_FAILED'
+    | 'APP_ID_REQUIRED'
+    | 'APP_NOT_FOUND'
+    | 'ORIGIN_NOT_ALLOWED'
+    | 'RECIPIENT_NOT_ALLOWED'
     | 'INTERNAL_ERROR';
 
 export interface ApiErrorResponse {
@@ -24,7 +28,6 @@ export interface QuoteRequestBody {
     refundTo?: string;
     recipient: string;
     deadline?: string;
-    referral?: string;
 }
 
 export interface DepositRequestBody {
@@ -42,6 +45,9 @@ const SWAP_TYPES = new Set([
 ]);
 
 const DEPOSIT_MODES = new Set(['SIMPLE', 'MEMO']);
+
+/** The most slippage a caller may ask for: 3%. The SDK asks for 1%. */
+const MAX_SLIPPAGE_BPS = 300;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
     return typeof value === 'object' && value !== null;
@@ -82,7 +88,6 @@ export function parseQuoteRequestBody(body: unknown): {
         refundTo,
         recipient,
         deadline,
-        referral,
     } = body;
 
     if (!isNonEmptyString(originAsset)) errors.push('originAsset is required.');
@@ -114,10 +119,13 @@ export function parseQuoteRequestBody(body: unknown): {
     if (
         slippageTolerance !== undefined &&
         (typeof slippageTolerance !== 'number' ||
-            !Number.isFinite(slippageTolerance) ||
-            slippageTolerance < 0)
+            !Number.isInteger(slippageTolerance) ||
+            slippageTolerance < 0 ||
+            slippageTolerance > MAX_SLIPPAGE_BPS)
     ) {
-        errors.push('slippageTolerance must be a non-negative number.');
+        errors.push(
+            `slippageTolerance must be a whole number of basis points from 0 to ${MAX_SLIPPAGE_BPS}.`
+        );
     }
     if (
         deadline !== undefined &&
@@ -146,7 +154,6 @@ export function parseQuoteRequestBody(body: unknown): {
             refundTo: optionalString(refundTo),
             recipient: recipient as string,
             deadline: optionalString(deadline),
-            referral: optionalString(referral),
         },
     };
 }

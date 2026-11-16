@@ -27,6 +27,9 @@ export function preflight(request: Request): Response {
     const headers = new Headers({
         'Access-Control-Allow-Origin': '*',
         'Access-Control-Allow-Methods': 'GET,HEAD,PUT,PATCH,POST,DELETE',
+        // Without this a browser repeats the preflight every five seconds, and
+        // each one counts toward the plan's daily request allowance.
+        'Access-Control-Max-Age': '7200',
         Vary: 'Access-Control-Request-Headers',
     });
     const requested = request.headers.get('Access-Control-Request-Headers');
