@@ -18,6 +18,7 @@ import { recordQuote, recordStatus } from '../db/records.js';
 import { errorResponse, json, readJsonBody } from '../http.js';
 import { OneClickError, getExecutionStatus, getQuote, submitDepositTx } from '../one-click.js';
 import { classifyQuoteFailure } from './quote-failure.js';
+import { slippageFor } from './slippage.js';
 import { recipientAllowed, resolveAccess } from '../apps.js';
 import { LOCAL_LIVE_QUOTE_LIMIT, checkAppLimit, checkLiveQuoteLimit } from '../rate-limit.js';
 
@@ -139,8 +140,13 @@ export async function handleQuote(
 
         const isExactOutput = swapType === 'EXACT_OUTPUT';
         const intentsRefundAccount = env.UNIPORT_INTENTS_REFUND_ACCOUNT?.trim().toLowerCase();
+        // A fixed-amount payment refunds to the payer's own address when they
+        // gave one. 1Click needs a refund destination before the payer's
+        // address can be known, so without one it is Uniport's Intents account.
+        const payerRefundAddress = typeof refundTo === 'string' ? refundTo.trim() : '';
+        const refundToUniport = isExactOutput && !payerRefundAddress;
 
-        if (isExactOutput && !intentsRefundAccount) {
+        if (refundToUniport && !intentsRefundAccount) {
             return errorResponse(
                 503,
                 {
@@ -154,14 +160,14 @@ export async function handleQuote(
         const quoteRequest: QuoteRequest = {
             dry: dry ?? false,
             swapType: (swapType as Enum<'swapType'> | undefined) ?? EXACT_INPUT,
-            slippageTolerance: slippageTolerance ?? 100,
+            slippageTolerance: slippageFor(originAsset, destinationAsset, slippageTolerance),
             depositMode: depositMode as Enum<'depositMode'> | undefined,
             originAsset,
             depositType: ORIGIN_CHAIN_DEPOSIT,
             destinationAsset,
             amount,
-            refundTo: isExactOutput ? intentsRefundAccount! : refundTo!,
-            refundType: isExactOutput ? INTENTS_REFUND : ORIGIN_CHAIN_REFUND,
+            refundTo: refundToUniport ? intentsRefundAccount! : payerRefundAddress,
+            refundType: refundToUniport ? INTENTS_REFUND : ORIGIN_CHAIN_REFUND,
             recipient,
             recipientType: DESTINATION_CHAIN,
             deadline: deadline ?? new Date(Date.now() + 3600000).toISOString(),
