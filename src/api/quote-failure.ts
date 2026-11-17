@@ -43,7 +43,7 @@ export function classifyQuoteFailure(body: unknown): QuoteFailure {
     }
     if (/too low|too small|minimum swap amount|below (the )?minimum/i.test(text)) {
         const amount = text.match(/at least (\d+)/i)?.[1];
-        const usd = text.match(/minimum swap amount is \$\s*([\d,.]+)/i)?.[1]?.replace(/,/g, '');
+        const usd = text.match(/minimum swap amount is \$\s*([\d,]+(?:\.\d+)?)/i)?.[1]?.replace(/,/g, '');
         return {
             code: 'AMOUNT_TOO_LOW',
             message: 'The amount is below the minimum for this route.',

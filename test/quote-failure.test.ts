@@ -20,6 +20,8 @@ test('dollar minimum carries the dollars', () => {
     assert.equal(failure.code, 'AMOUNT_TOO_LOW');
     assert.deepEqual(failure.minimum, { usd: '100' });
     assert.deepEqual(classifyQuoteFailure(body('Temporary swap limits: minimum swap amount is $1,000')).minimum, { usd: '1000' });
+    assert.deepEqual(classifyQuoteFailure(body('Temporary swap limits: minimum swap amount is $1.00.')).minimum, { usd: '1.00' });
+    assert.deepEqual(classifyQuoteFailure(body('minimum swap amount is $100.')).minimum, { usd: '100' });
 });
 
 test('addresses', () => {
